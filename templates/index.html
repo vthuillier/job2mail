@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0f1419">
+<title>JobToMail</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/index.css') }}">
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="brand-mark">JM</div>
+    JobToMail
+  </div>
+  <nav>
+    <button class="nav-btn active" data-page="entreprises">Entreprises</button>
+    <button class="nav-btn" data-page="scan">Scan Sirene</button>
+    <button class="nav-btn" data-page="config">Paramètres</button>
+  </nav>
+</header>
+
+<main>
+  <section id="page-entreprises" class="page active">
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-val" id="st-total">0</div>
+        <div class="stat-lbl">Entreprises en base</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="st-todo">0</div>
+        <div class="stat-lbl">À postuler</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="st-sent">0</div>
+        <div class="stat-lbl">Mails envoyés</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="st-relances">0</div>
+        <div class="stat-lbl">Relances dues</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="st-entretiens">0</div>
+        <div class="stat-lbl">Entretiens</div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="chips" id="filters"></div>
+      <div class="toolbar-actions">
+        <input class="search" id="search" placeholder="Filtrer par nom…">
+        <button class="btn btn-primary btn-sm" id="btn-add-entreprise" type="button">Ajouter</button>
+        <button class="btn btn-secondary btn-sm" id="btn-refresh">Rafraîchir</button>
+        <button class="btn btn-secondary btn-sm" id="btn-check-replies" title="Lit la boîte sans marquer les mails comme lus">Vérifier réponses</button>
+        <button class="btn btn-secondary btn-sm due-chip" id="btn-relances-dues" type="button">Relances dues</button>
+        <button class="btn btn-sky btn-sm" id="btn-serpapi">Scan SerpAPI</button>
+        <button class="btn btn-secondary btn-sm" id="btn-dirigeants">Dirigeants</button>
+        <button class="btn btn-secondary btn-sm" id="btn-contacts">Contacts RH/tech</button>
+      </div>
+    </div>
+
+    <div class="adv-filters" id="adv-filters">
+      <button type="button" class="adv-filters-toggle" id="adv-filters-toggle">
+        <span>Filtres avancés <span class="badge-count" id="adv-active-count" style="display:none">0 actif(s)</span></span>
+        <span class="chevron">▼</span>
+      </button>
+      <div class="adv-filters-body">
+        <div class="adv-filters-grid">
+          <div class="form-group">
+            <label class="form-label">Codes NAF</label>
+            <div class="filter-checklist" id="filter-naf"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Effectif</label>
+            <div class="filter-checklist" id="filter-effectif"></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Commune</label>
+            <input class="form-control" id="filter-commune" placeholder="Ex: Toulon, La Crau…">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Catégorie</label>
+            <select class="form-control" id="filter-categorie">
+              <option value="">Toutes</option>
+              <option value="PME">PME</option>
+              <option value="ETI">ETI</option>
+              <option value="GE">Grande entreprise (GE)</option>
+              <option value="_none">Non renseignée</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Type de structure</label>
+            <select class="form-control" id="filter-nature">
+              <option value="">Tous</option>
+              <option value="entreprise">Entreprises</option>
+              <option value="mairie">Mairies</option>
+              <option value="association">Associations</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Score minimum</label>
+            <input type="number" class="form-control" id="filter-score-min" min="0" max="100" step="1" placeholder="Ex: 50">
+          </div>
+          <div class="form-group">
+            <label class="form-label" id="filter-travel-label">Trajet max sans péage (min)</label>
+            <input type="number" class="form-control" id="filter-travel-max" min="1" step="1" placeholder="Ex: 30">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Options</label>
+            <div class="filter-options">
+              <label><input type="checkbox" id="filter-siege"> Siège social uniquement</label>
+              <label><input type="checkbox" id="filter-contact"> Contact renseigné</label>
+              <label><input type="checkbox" id="filter-email"> Email renseigné</label>
+              <label><input type="checkbox" id="filter-serpapi"> SerpAPI déjà scanné</label>
+            </div>
+          </div>
+        </div>
+        <div class="adv-filters-foot">
+          <div class="filter-result" id="filter-result">—</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-compute-travel">Calculer les trajets</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-reset-filters">Réinitialiser les filtres</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="view-toggle">
+      <button type="button" class="chip active" id="view-list">Liste</button>
+      <button type="button" class="chip" id="view-map">Carte</button>
+    </div>
+
+    <div class="map-panel" id="map-panel">
+      <div id="map"></div>
+      <div class="map-legend" id="map-legend"></div>
+    </div>
+
+    <div class="panel list-panel" id="list-panel">
+      <table>
+        <thead>
+          <tr>
+            <th>Score</th>
+            <th>Entreprise</th>
+            <th>Localisation</th>
+            <th>Effectif</th>
+            <th>LinkedIn (prébuild)</th>
+            <th>Contact</th>
+            <th>Statut</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="page-scan" class="page">
+    <div class="grid-2">
+      <div class="card">
+        <h2>Recherche Sirene (INSEE)</h2>
+        <p class="help">Choisis la zone, le rayon et les codes NAF. Le scan récupère les établissements actifs puis les stocke en SQLite.</p>
+
+        <div class="form-group">
+          <label class="form-label">Commune de référence</label>
+          <input id="scan-point" class="form-control" value="La Crau">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Rayon (km)</label>
+            <input id="scan-rayon" type="number" class="form-control" value="20" min="1">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Départements</label>
+            <input id="scan-depts" class="form-control" value="83, 13">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Codes NAF</label>
+          <div class="naf-box" id="naf-list"></div>
+          <div class="naf-add">
+            <input id="naf-code" class="form-control" placeholder="62.01Z">
+            <input id="naf-lib" class="form-control" placeholder="Libellé">
+            <button class="btn btn-secondary" id="btn-add-naf" type="button">Ajouter</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Structures publiques</label>
+          <div class="filter-options">
+            <label><input type="checkbox" id="scan-mairies" checked> Mairies (communes)</label>
+            <label><input type="checkbox" id="scan-associations" checked> Associations employeuses</label>
+          </div>
+          <p class="help" style="margin:8px 0 0;">
+            Les associations sont limitées à celles qui déclarent des salariés (Loi 1901 / RUP).
+          </p>
+        </div>
+
+        <button class="btn btn-primary" id="btn-sirene" style="width:100%;margin-top:8px;">
+          Lancer le scan Sirene + nettoyage
+        </button>
+        <button class="btn btn-secondary" id="btn-clean" style="width:100%;margin-top:8px;">
+          Relancer le nettoyage seul
+        </button>
+
+        <div class="form-group" style="margin-top:18px;">
+          <label class="form-label">LA French Tech Toulon</label>
+          <p class="help" style="margin-top:0;">
+            Scraping de l’annuaire
+            <a href="https://www.frenchtechtoulon.fr/annuaire-general" target="_blank" rel="noopener">frenchtechtoulon.fr</a>
+            (~150 membres), résolution SIRET via l’API Recherche d’Entreprises, emails et sites repris quand disponibles.
+          </p>
+          <div class="filter-options" style="margin-bottom:10px;">
+            <label><input type="checkbox" id="ft-tech-only" checked> Catégories tech (+ sans thème)</label>
+            <label><input type="checkbox" id="ft-resolve-siret" checked> Résoudre les SIRET</label>
+            <label><input type="checkbox" id="ft-resolve-emails" checked> Récupérer les emails</label>
+          </div>
+          <button class="btn btn-secondary" id="btn-frenchtech" type="button" style="width:100%;">
+            Importer French Tech Toulon
+          </button>
+        </div>
+
+        <div class="form-group" style="margin-top:18px;">
+          <label class="form-label">Prune (effectif + trajets GPS)</label>
+          <p class="help" style="margin-top:0;">
+            Supprime les structures trop petites puis celles hors rayon de trajet réel sans péage
+            (même logique que <code>prune_entreprises.py</code>).
+            Les entreprises déjà postulées, relancées, en entretien, offre, refusées ou
+            marquées hors champs sont <strong>toujours conservées</strong>.
+          </p>
+          <button class="btn btn-secondary" id="btn-hors-champs" type="button" style="width:100%;margin-bottom:14px;">
+            Marquer hors champs (NAF / thème non IT)
+          </button>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Effectif min</label>
+              <input id="prune-min-emp" type="number" class="form-control" value="3" min="0">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Trajet max (min)</label>
+              <input id="prune-max-travel" type="number" class="form-control" value="45" min="1" step="1">
+            </div>
+          </div>
+          <div class="filter-options" style="margin-bottom:10px;">
+            <label><input type="checkbox" id="prune-force"> Recalculer tous les trajets</label>
+            <label><input type="checkbox" id="prune-delete-unknown-emp"> Supprimer effectif non renseigné (NN)</label>
+            <label><input type="checkbox" id="scan-auto-prune"> Après le scan Sirene</label>
+          </div>
+          <button class="btn btn-secondary" id="btn-prune" type="button" style="width:100%;">
+            Lancer le prune
+          </button>
+        </div>
+      </div>
+
+      <div class="card" style="display:flex;flex-direction:column;">
+        <h2>Enrichissement SerpAPI + Ollama</h2>
+        <p class="help">
+          1 requête Google simple par entreprise : <code>"Nom boîte" Ville</code>.
+          Puis <strong>Ollama (qwen3:0.6b)</strong> choisit le LinkedIn company et le site officiel parmi les résultats.
+        </p>
+        <ul style="color:var(--muted);font-size:0.86rem;line-height:1.7;margin:0 0 12px 18px;">
+          <li>Query SerpAPI minimale (nom + ville)</li>
+          <li>Extraction IA locale via Ollama</li>
+          <li>Fallback heuristique si Ollama down</li>
+        </ul>
+        <p class="help" id="ollama-status" style="margin-bottom:16px;">Ollama : …</p>
+        <div style="margin-top:auto;display:grid;gap:10px;">
+          <button class="btn btn-sky" id="btn-serpapi-2">Lancer SerpAPI (non scannées)</button>
+          <button class="btn btn-secondary" id="btn-dirigeants-2">Récupérer les dirigeants (API gouv)</button>
+          <button class="btn btn-secondary" id="btn-contacts-2">Chercher contacts RH / tech (SerpAPI)</button>
+          <button class="btn btn-secondary" id="btn-reset-db">Vider la base entreprises</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="page-config" class="page">
+    <div class="card config-wrap">
+      <h2>Paramètres</h2>
+      <p class="help">Les valeurs du fichier <code>.env</code> sont chargées par défaut. Tu peux tout surcharger ici.</p>
+
+      <div class="config-section">
+        <h3>Clés API & SMTP</h3>
+        <div class="form-group">
+          <label class="form-label">INSEE_TOKEN</label>
+          <input id="cfg-insee" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label">SERPAPI_KEY</label>
+          <input id="cfg-serp" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label">TOKEN_HUNTER_IO</label>
+          <input id="cfg-hunter" class="form-control">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">EMAIL_ADDRESS (Gmail)</label>
+            <input id="cfg-email" type="email" class="form-control">
+          </div>
+          <div class="form-group">
+            <label class="form-label">EMAIL_PASSWORD (mot de passe d'application)</label>
+            <input id="cfg-pwd" type="password" class="form-control">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Votre nom (pour la pièce jointe CV)</label>
+          <input id="cfg-candidate-name" class="form-control" placeholder="Prénom Nom">
+          <p class="help">Utilisé pour nommer le PDF joint aux emails, ex. « CV - Prénom Nom.pdf ».</p>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <h3>Zone de scan Sirene</h3>
+        <div class="form-group">
+          <label class="form-label">Commune de référence</label>
+          <input id="cfg-point" class="form-control" value="La Crau">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Rayon (km)</label>
+            <input id="cfg-rayon" type="number" class="form-control" value="20" min="1">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Départements</label>
+            <input id="cfg-depts" class="form-control" value="83, 13">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Codes NAF</label>
+          <div class="naf-box" id="cfg-naf-list"></div>
+          <div class="naf-add">
+            <input id="cfg-naf-code" class="form-control" placeholder="62.01Z">
+            <input id="cfg-naf-lib" class="form-control" placeholder="Libellé">
+            <button class="btn btn-secondary" id="btn-cfg-add-naf" type="button">Ajouter</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <h3>Mail de candidature</h3>
+        <p class="template-vars">
+          Variables : <code>{salutation}</code> <code>{nom}</code> <code>{prenom}</code> <code>{denomination}</code> <code>{poste}</code> <code>{accroche}</code>
+        </p>
+        <div class="form-group">
+          <label class="form-label">Objet du mail</label>
+          <input id="cfg-mail-subject" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Corps du mail</label>
+          <textarea id="cfg-mail-body" class="form-control" style="min-height:220px;font-family:var(--mono);font-size:0.82rem;"></textarea>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <h3>Mail de relance</h3>
+        <p class="help" style="margin-bottom:10px;">
+          Relance 1 à J+5, relance 2 (angle différent) à J+7 après, puis stop.
+          En-têtes <code>In-Reply-To</code> / <code>References</code> pour garder le fil Gmail.
+        </p>
+        <p class="template-vars">
+          Variables : <code>{salutation}</code> <code>{nom}</code> <code>{prenom}</code> <code>{denomination}</code> <code>{poste}</code>
+        </p>
+        <div class="form-group">
+          <label class="form-label">Corps relance n°1</label>
+          <textarea id="cfg-relance-body" class="form-control" style="min-height:140px;font-family:var(--mono);font-size:0.82rem;"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Corps relance n°2 (dernier angle)</label>
+          <textarea id="cfg-relance2-body" class="form-control" style="min-height:140px;font-family:var(--mono);font-size:0.82rem;"></textarea>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="btn-save-cfg" style="width:100%;">Sauvegarder tous les paramètres</button>
+    </div>
+  </section>
+</main>
+
+<div class="overlay" id="overlay"></div>
+
+<div class="modal" id="modal-add" role="dialog" aria-labelledby="modal-add-title" aria-modal="true">
+  <div class="modal-head">
+    <strong id="modal-add-title">Ajouter une entreprise</strong>
+    <button class="close-x" id="modal-add-close" type="button">✕</button>
+  </div>
+  <div class="modal-body">
+    <p class="help" style="margin-top:0;">Renseigne au minimum le nom. Le SIRET est optionnel (un identifiant sera généré sinon).</p>
+    <div class="form-group">
+      <label class="form-label">Dénomination *</label>
+      <input id="add-denom" class="form-control" placeholder="Nom de l'entreprise" required>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">SIRET</label>
+        <input id="add-siret" class="form-control" inputmode="numeric" maxlength="17" placeholder="14 chiffres (optionnel)">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Commune</label>
+        <input id="add-commune" class="form-control" placeholder="Ex: Toulon">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Adresse</label>
+      <input id="add-adresse" class="form-control" placeholder="Rue, CP…">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Effectif</label>
+        <select id="add-effectif" class="form-control"></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Catégorie</label>
+        <select id="add-categorie" class="form-control">
+          <option value="">Non renseignée</option>
+          <option value="PME">PME</option>
+          <option value="ETI">ETI</option>
+          <option value="GE">Grande entreprise (GE)</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Code NAF</label>
+        <input id="add-naf" class="form-control" placeholder="62.01Z">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Libellé NAF</label>
+        <input id="add-naf-lib" class="form-control" placeholder="Programmation informatique">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Site web</label>
+        <input id="add-site" class="form-control" placeholder="https://…">
+      </div>
+      <div class="form-group">
+        <label class="form-label">LinkedIn company</label>
+        <input id="add-li" class="form-control" placeholder="https://linkedin.com/company/…">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notes</label>
+      <textarea id="add-notes" class="form-control" placeholder="Contexte, piste, etc."></textarea>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-secondary" id="modal-add-cancel" type="button">Annuler</button>
+    <button class="btn btn-primary" id="modal-add-submit" type="button" style="flex:1;">Ajouter</button>
+  </div>
+</div>
+
+<aside class="drawer" id="drawer">
+  <div class="drawer-head">
+    <strong>Fiche & contact</strong>
+    <button class="close-x" id="drawer-close" type="button">✕</button>
+  </div>
+  <div class="drawer-body">
+    <input type="hidden" id="d-siret">
+    <div class="company-box">
+      <div class="title" id="d-denom">—</div>
+      <div class="sub" id="d-adresse">—</div>
+      <div style="margin-top:10px;">
+        <a class="ext" id="d-li-people" href="#" target="_blank" rel="noopener">Ouvrir recherche LinkedIn people ↗</a>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Site web</label>
+        <input id="d-site" class="form-control" placeholder="https://…">
+      </div>
+      <div class="form-group">
+        <label class="form-label">LinkedIn company</label>
+        <input id="d-li-company" class="form-control" placeholder="https://linkedin.com/company/…">
+      </div>
+    </div>
+    <button class="btn btn-sky btn-sm" id="btn-scan-one" type="button" style="width:100%;margin-bottom:18px;">
+      Scanner cette entreprise (SerpAPI + Ollama)
+    </button>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Prénom</label>
+        <input id="d-prenom" class="form-control">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Nom</label>
+        <input id="d-nom" class="form-control">
+      </div>
+    </div>
+    <button class="btn btn-secondary btn-sm" id="btn-dirigeant-one" type="button" style="width:100%;margin-bottom:8px;">
+      Récupérer le dirigeant (API gouv)
+    </button>
+    <button class="btn btn-sky btn-sm" id="btn-contact-one" type="button" style="width:100%;margin-bottom:18px;">
+      Chercher contact RH / tech (SerpAPI)
+    </button>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Sexe / salutation</label>
+        <select id="d-genre" class="form-control">
+          <option value="m">Monsieur (m)</option>
+          <option value="f">Madame (f)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Poste</label>
+        <input id="d-poste" class="form-control" placeholder="CTO, RH…">
+      </div>
+    </div>
+    <input type="hidden" id="d-contact-source" value="">
+
+    <div class="form-group">
+      <label class="form-label">Email</label>
+      <div class="email-row">
+        <input id="d-email" type="email" class="form-control">
+        <button class="btn btn-secondary btn-sm" id="btn-hunter" type="button">Hunter.io</button>
+      </div>
+      <div id="d-email-quality" class="quality-badge" style="display:none;"></div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Profil LinkedIn contact</label>
+      <input id="d-li-contact" class="form-control">
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Statut</label>
+      <select id="d-status" class="form-control">
+        <option value="a_postuler">À postuler</option>
+        <option value="hors_champs">Hors champs (hors IT)</option>
+        <option value="postule">Postulé</option>
+        <option value="relance">Relance</option>
+        <option value="entretien">Entretien</option>
+        <option value="refus">Refus</option>
+        <option value="offre">Offre</option>
+      </select>
+    </div>
+
+    <div class="entretien-box" id="d-entretien-box">
+      <div class="section-label" style="margin-top:0;">Suivi entretien</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Date entretien</label>
+          <input id="d-entretien-date" type="datetime-local" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Rappel</label>
+          <input id="d-entretien-rappel" type="date" class="form-control">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Prochaine étape</label>
+        <input id="d-entretien-next" class="form-control" placeholder="Appel RH, test technique…">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Accroche mail (perso)</label>
+      <textarea id="d-accroche" class="form-control" placeholder="1–2 phrases générées ou écrites à la main" style="min-height:72px;"></textarea>
+      <button class="btn btn-secondary btn-sm" id="btn-accroche" type="button" style="margin-top:8px;width:100%;">Générer avec Ollama</button>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Notes</label>
+      <textarea id="d-notes" class="form-control"></textarea>
+    </div>
+
+    <div class="mail-info" id="d-mail-info" style="display:none;"></div>
+  </div>
+  <div class="drawer-foot">
+    <button class="btn btn-secondary" id="btn-delete" type="button">Supprimer</button>
+    <button class="btn btn-primary" id="btn-save" style="flex:1;" type="button">Enregistrer</button>
+    <button class="btn btn-sky" id="btn-mail" style="flex:1;" type="button">Envoyer le mail</button>
+    <button class="btn btn-secondary" id="btn-relance" style="flex:1;display:none;" type="button">Relancer</button>
+  </div>
+</aside>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script type="module" src="{{ url_for('static', filename='js/index.js') }}"></script>
+</body>
+</html>

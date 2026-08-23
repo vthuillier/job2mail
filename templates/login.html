@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0f1419">
+<title>Connexion — JobToMail</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0f1419;
+    --bg-elevated: #1a222d;
+    --border: #2a3544;
+    --text: #e8eef4;
+    --muted: #8b9aab;
+    --teal: #2dd4bf;
+    --teal-dim: rgba(45, 212, 191, 0.12);
+    --rose: #fb7185;
+    --rose-dim: rgba(251, 113, 133, 0.12);
+    --font: "DM Sans", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    font-family: var(--font);
+    color: var(--text);
+    background:
+      radial-gradient(ellipse 80% 50% at 10% -10%, rgba(45, 212, 191, 0.08), transparent),
+      radial-gradient(ellipse 60% 40% at 100% 0%, rgba(56, 189, 248, 0.06), transparent),
+      var(--bg);
+  }
+
+  .card {
+    width: 100%;
+    max-width: 400px;
+    padding: 32px 28px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+
+  .brand-mark {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: linear-gradient(145deg, var(--teal), #0d9488);
+    display: grid;
+    place-items: center;
+    color: #042f2e;
+    font-family: var(--mono);
+    font-weight: 500;
+    font-size: 0.8rem;
+  }
+
+  .brand strong {
+    font-size: 1.2rem;
+    letter-spacing: -0.03em;
+  }
+
+  h1 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .hint {
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin-bottom: 22px;
+  }
+
+  label {
+    display: block;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  input[type="password"] {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: #121820;
+    color: var(--text);
+    font: inherit;
+    font-size: 1rem;
+    outline: none;
+  }
+
+  input[type="password"]:focus {
+    border-color: var(--teal);
+    box-shadow: 0 0 0 3px var(--teal-dim);
+  }
+
+  button {
+    width: 100%;
+    margin-top: 18px;
+    padding: 12px 16px;
+    border: none;
+    border-radius: 10px;
+    background: linear-gradient(145deg, var(--teal), #0d9488);
+    color: #042f2e;
+    font: inherit;
+    font-weight: 700;
+    font-size: 0.95rem;
+    cursor: pointer;
+  }
+
+  button:hover { filter: brightness(1.06); }
+
+  .error {
+    margin-bottom: 16px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--rose-dim);
+    color: var(--rose);
+    font-size: 0.88rem;
+    font-weight: 500;
+  }
+</style>
+</head>
+<body>
+  <form class="card" method="post" autocomplete="current-password">
+    <div class="brand">
+      <div class="brand-mark">J2M</div>
+      <strong>JobToMail</strong>
+    </div>
+    <h1>Accès protégé</h1>
+    <p class="hint">Saisis le mot de passe pour continuer.</p>
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+    <label for="password">Mot de passe</label>
+    <input id="password" name="password" type="password" required autofocus>
+    <button type="submit">Se connecter</button>
+  </form>
+</body>
+</html>

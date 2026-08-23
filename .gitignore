@@ -1,0 +1,14 @@
+.env
+jobtomail.db
+*.db.bk
+*.backup-*.db
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.db-journal
+logs/
+*.log
+cv.pdf
+graphify-out/
+.DS_Store

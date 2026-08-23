@@ -1,0 +1,165 @@
+.adv-filters {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .adv-filters-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: left;
+  }
+  .adv-filters-toggle:hover { background: rgba(255,255,255,0.02); }
+  .adv-filters-toggle .badge-count {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--teal);
+    background: var(--teal-dim);
+    padding: 3px 8px;
+    border-radius: 999px;
+  }
+  .adv-filters-toggle .chevron {
+    color: var(--muted);
+    transition: transform 0.2s ease;
+  }
+  .adv-filters.open .adv-filters-toggle .chevron { transform: rotate(180deg); }
+  .adv-filters-body {
+    display: none;
+    padding: 0 16px 16px;
+    border-top: 1px solid var(--border);
+  }
+  .adv-filters.open .adv-filters-body { display: block; }
+  .adv-filters-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px 16px;
+    padding-top: 14px;
+  }
+  @media (max-width: 900px) { .adv-filters-grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 600px) { .adv-filters-grid { grid-template-columns: 1fr; } }
+
+  .filter-checklist {
+    max-height: 140px;
+    overflow: auto;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+    display: grid;
+    gap: 6px;
+  }
+  .filter-check-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 0.8rem;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .filter-check-item input { margin-top: 2px; accent-color: var(--teal); flex-shrink: 0; }
+  .filter-check-item strong { color: var(--text); font-family: var(--mono); font-size: 0.75rem; }
+  .filter-options { display: grid; gap: 8px; }
+  .filter-options label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.84rem;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .filter-options input { accent-color: var(--teal); }
+  .adv-filters-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .filter-result {
+    font-size: 0.84rem;
+    color: var(--muted);
+  }
+  .filter-result strong {
+    color: var(--teal);
+    font-family: var(--mono);
+  }
+
+  .email-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .view-toggle {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 14px;
+  }
+
+  .map-panel {
+    display: none;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .map-panel.active { display: block; }
+  #map {
+    width: 100%;
+    height: min(62vh, 520px);
+    min-height: 280px;
+    background: var(--bg-soft);
+  }
+  .map-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-soft);
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .map-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .map-legend i {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .list-panel.hidden { display: none; }
+
+  .leaflet-popup-content-wrapper {
+    background: var(--bg-elevated);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .leaflet-popup-tip { background: var(--bg-elevated); }
+  .leaflet-popup-content { margin: 12px 14px; font-family: var(--font); font-size: 0.86rem; line-height: 1.45; }
+  .map-popup-title { font-weight: 700; margin-bottom: 4px; }
+  .map-popup-sub { color: var(--muted); font-size: 0.8rem; margin-bottom: 8px; }
+  .map-popup-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+
+  
