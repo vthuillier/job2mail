@@ -2,9 +2,10 @@ services:
   web:
     build: .
     ports:
-      - "5001:5001"
+      - "5002:5001"
     volumes:
       - .:/app
     env_file:
-      - .env
+      - path: .env
+        required: false
     restart: unless-stopped

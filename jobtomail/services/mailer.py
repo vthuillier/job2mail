@@ -118,7 +118,7 @@ def _reply_subject(original_subject: str) -> str:
 
 def _smtp_send(msg: EmailMessage, email_address: str, email_password: str) -> None:
     context = ssl.create_default_context()
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as smtp:
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=30) as smtp:
         smtp.login(email_address, email_password)
         smtp.send_message(msg)
 

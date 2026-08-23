@@ -10,19 +10,19 @@ import {
   formatTravelInfo,
 } from "./shared.js";
 
-document.querySelectorAll(".nav-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".nav-btn").forEach((b) => b.classList.remove("active"));
-      document.querySelectorAll(".page").forEach((p) => p.classList.remove("active"));
-      btn.classList.add("active");
-      document.getElementById(`page-${btn.dataset.page}`).classList.add("active");
-      if (btn.dataset.page === "entreprises" && state.view === "map") {
-        setTimeout(() => {
-          if (state.map) state.map.invalidateSize();
-          renderMap();
-        }, 80);
-      }
-    });
+function activatePage(page) {
+    document.querySelectorAll(".nav-btn").forEach((b) => b.classList.toggle("active", b.dataset.page === page));
+    document.querySelectorAll(".page").forEach((p) => p.classList.toggle("active", p.id === `page-${page}`));
+    if (page === "entreprises" && state.view === "map") {
+      setTimeout(() => {
+        if (state.map) state.map.invalidateSize();
+        renderMap();
+      }, 80);
+    }
+  }
+
+  document.querySelectorAll(".nav-btn").forEach((btn) => {
+    btn.addEventListener("click", () => activatePage(btn.dataset.page));
   });
 
   function setView(view) {
@@ -481,6 +481,11 @@ document.querySelectorAll(".nav-btn").forEach((btn) => {
     }
     renderNafs(true);
     renderCfgNafs(true);
+
+    if (cfg.needs_setup) {
+      activatePage("config");
+      toast("Bienvenue ! Renseigne tes paramètres pour commencer (ou passe-les par un fichier .env).");
+    }
   }
 
   function renderNafBox(boxId, checkedAll = false) {

@@ -189,7 +189,7 @@ def fetch_inbox_replies(
     les mails restent non lus côté Gmail.
     """
     logger.info("Connexion IMAP readonly → %s", email_address)
-    mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+    mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=30)
     try:
         mail.login(email_address, email_password)
         # readonly=True : aucun flag (\Seen) ne peut être modifié

@@ -40,15 +40,21 @@ def api_config():
     cfg = db.get_all_config()
     nafs = db.load_nafs(cfg)
     logger.debug("GET /api/config — %d clé(s) SQLite, %d NAF", len(cfg), len(nafs))
+
+    candidate_name = cfg.get("candidate_name", "")
+    email_address = cfg.get("EMAIL_ADDRESS") or os.getenv("EMAIL_ADDRESS", "")
+    insee_token = cfg.get("INSEE_TOKEN") or os.getenv("INSEE_TOKEN", "")
+    needs_setup = not (candidate_name and email_address and insee_token)
+
     return jsonify(
         {
-            "INSEE_TOKEN": cfg.get("INSEE_TOKEN") or os.getenv("INSEE_TOKEN", ""),
+            "INSEE_TOKEN": insee_token,
             "SERPAPI_KEY": cfg.get("SERPAPI_KEY")
             or os.getenv("SERPAPI_KEY")
             or os.getenv("SERPAPI_TOKEN", ""),
             "TOKEN_HUNTER_IO": cfg.get("TOKEN_HUNTER_IO") or os.getenv("TOKEN_HUNTER_IO", ""),
-            "candidate_name": cfg.get("candidate_name", ""),
-            "EMAIL_ADDRESS": cfg.get("EMAIL_ADDRESS") or os.getenv("EMAIL_ADDRESS", ""),
+            "candidate_name": candidate_name,
+            "EMAIL_ADDRESS": email_address,
             "EMAIL_PASSWORD": cfg.get("EMAIL_PASSWORD") or os.getenv("EMAIL_PASSWORD", ""),
             "point_ref": cfg.get("point_ref", "La Crau"),
             "rayon_km": cfg.get("rayon_km", "20"),
@@ -61,6 +67,7 @@ def api_config():
             "mots_cles_poste": MOTS_CLES_POSTE,
             "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL") or OLLAMA_MODEL,
             "ollama_available": ollama_available(),
+            "needs_setup": needs_setup,
         }
     )
 

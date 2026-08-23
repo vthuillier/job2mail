@@ -12,3 +12,4 @@ logs/
 cv.pdf
 graphify-out/
 .DS_Store
+.serena/
