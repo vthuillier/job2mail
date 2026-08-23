@@ -33,6 +33,7 @@ def index():
 def api_config():
     if request.method == "POST":
         data = request.get_json(force=True) or {}
+        data = {k: v for k, v in data.items() if not k.startswith("_")}
         logger.info("POST /api/config — clés reçues : %s", list(data.keys()))
         db.set_config_values(data)
         return jsonify({"ok": True})
