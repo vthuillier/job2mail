@@ -14,10 +14,11 @@ logger = logging.getLogger(__name__)
 # Filtre : trop petit pour candidater utilement (0 à 5 salariés)
 EFFECTIFS_EXCLUS = {"00", "01", "02"}
 
-POIDS_EFFECTIF = 0.4
-POIDS_ANCIENNETE = 0.3
-POIDS_SIEGE = 0.2
+POIDS_EFFECTIF = 0.35
+POIDS_ANCIENNETE = 0.25
+POIDS_SIEGE = 0.15
 POIDS_CATEGORIE = 0.1
+POIDS_KEYWORDS = 0.15
 
 SCORE_EFFECTIF = {
     "NN": 0.3,
@@ -65,7 +66,18 @@ def _anciennete_score(date_creation: str | None) -> float:
     return 0.5
 
 
-def score_pertinence(row: dict[str, Any]) -> float:
+def _keyword_match_score(row: dict[str, Any], keywords: list[str] | None) -> float:
+    """Similarité (substring match) entre mots-clés du CV et libellé NAF / dénomination.
+    Neutre (0.5) si aucun profil CV n'est disponible — ne pénalise pas en son absence.
+    """
+    if not keywords:
+        return 0.5
+    haystack = f"{row.get('naf_libelle') or ''} {row.get('denomination') or ''}".lower()
+    hits = sum(1 for kw in keywords if kw and kw.lower() in haystack)
+    return min(1.0, hits / max(1, len(keywords) * 0.15))
+
+
+def score_pertinence(row: dict[str, Any], *, cv_keywords: list[str] | None = None) -> float:
     nature = (row.get("nature") or "entreprise").strip() or "entreprise"
     if nature == "mairie":
         # Collectivités : score stable, utile pour candidater SI / numérique
@@ -81,11 +93,13 @@ def score_pertinence(row: dict[str, Any]) -> float:
     anc = _anciennete_score(row.get("date_creation"))
     siege = 1.0 if row.get("est_siege") else 0.4
     cat = SCORE_CATEGORIE.get(row.get("categorie_entreprise") or "", 0.5)
+    kw = _keyword_match_score(row, cv_keywords)
     score = (
         POIDS_EFFECTIF * eff
         + POIDS_ANCIENNETE * anc
         + POIDS_SIEGE * siege
         + POIDS_CATEGORIE * cat
+        + POIDS_KEYWORDS * kw
     )
     return round(score * 100, 1)
 
@@ -166,8 +180,17 @@ def clean_entreprises(*, apply_effectif_filter: bool = True) -> dict[str, Any]:
         deduped.append(_pick_best_etablissement(group))
     deduped.extend(sans_siren)
 
+    cv_keywords = None
+    try:
+        from jobtomail.services.cv_profile import extract_cv_profile
+
+        profile = extract_cv_profile()
+        cv_keywords = profile["keywords"] if profile else None
+    except Exception:
+        logger.exception("Extraction profil CV indisponible — scoring sans mots-clés")
+
     for r in deduped:
-        r["score_pertinence"] = score_pertinence(r)
+        r["score_pertinence"] = score_pertinence(r, cv_keywords=cv_keywords)
 
     deduped.sort(
         key=lambda r: (-(r.get("score_pertinence") or 0), r.get("denomination") or "")

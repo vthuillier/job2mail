@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request
 
 from jobtomail.constants import DEFAULT_NAF_CODES, OLLAMA_MODEL
 from jobtomail.db import env_or_config
+from jobtomail.services import jobs
 from jobtomail.services.cleaner import clean_entreprises
 from jobtomail.services.contacts import run_contacts_scan
 from jobtomail.services.dirigeants import run_dirigeants_scan
@@ -60,8 +61,13 @@ def scan_sirene():
         include_associations,
     )
 
-    try:
-        result = run_sirene_scan(
+    job_id = jobs.create_job(
+        "sirene",
+        params={"point_ref": point_ref, "rayon_km": rayon_km, "departements": depts},
+    )
+    jobs.submit_job(
+        job_id,
+        lambda: run_sirene_scan(
             point_ref=point_ref,
             rayon_km=rayon_km,
             departements=depts,
@@ -69,15 +75,10 @@ def scan_sirene():
             insee_token=insee_token,
             include_mairies=include_mairies,
             include_associations=include_associations,
-        )
-    except ValueError as e:
-        logger.warning("Scan Sirene ValueError : %s", e)
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        logger.exception("Scan Sirene échoué")
-        return jsonify({"error": f"Erreur géolocalisation / Sirene : {e}"}), 400
-
-    return jsonify({"ok": True, **result})
+        ),
+        kind="sirene",
+    )
+    return jsonify({"job_id": job_id}), 202
 
 
 @bp.route("/api/scan/serpapi", methods=["POST"])
@@ -104,17 +105,20 @@ def scan_serpapi():
         ollama_available(),
         OLLAMA_MODEL,
     )
-    try:
-        result = run_serpapi_scan(
-            serpapi_key=serpapi_key,
-            sirets=sirets or None,
-            use_ollama=bool(use_ollama),
-        )
-    except Exception as e:
-        logger.exception("Scan SerpAPI échoué")
-        return jsonify({"error": str(e)}), 500
-
-    return jsonify({"ok": True, "ollama": ollama_available(), **result})
+    job_id = jobs.create_job("serpapi", params={"sirets": sirets})
+    jobs.submit_job(
+        job_id,
+        lambda: {
+            "ollama": ollama_available(),
+            **run_serpapi_scan(
+                serpapi_key=serpapi_key,
+                sirets=sirets or None,
+                use_ollama=bool(use_ollama),
+            ),
+        },
+        kind="serpapi",
+    )
+    return jsonify({"job_id": job_id}), 202
 
 
 @bp.route("/api/scan/serpapi/<siret>", methods=["POST"])
@@ -165,17 +169,13 @@ def scan_dirigeants():
         force,
         limit,
     )
-    try:
-        result = run_dirigeants_scan(
-            sirets=sirets or None,
-            force=force,
-            limit=limit,
-        )
-    except Exception as e:
-        logger.exception("Scan dirigeants échoué")
-        return jsonify({"error": str(e)}), 500
-
-    return jsonify({"ok": True, **result})
+    job_id = jobs.create_job("dirigeants", params={"sirets": sirets, "force": force, "limit": limit})
+    jobs.submit_job(
+        job_id,
+        lambda: run_dirigeants_scan(sirets=sirets or None, force=force, limit=limit),
+        kind="dirigeants",
+    )
+    return jsonify({"job_id": job_id}), 202
 
 
 @bp.route("/api/scan/dirigeants/<siret>", methods=["POST"])
@@ -223,19 +223,19 @@ def scan_contacts():
         force,
         limit,
     )
-    try:
-        result = run_contacts_scan(
+    job_id = jobs.create_job("contacts", params={"sirets": sirets, "force": force, "limit": limit})
+    jobs.submit_job(
+        job_id,
+        lambda: run_contacts_scan(
             serpapi_key=serpapi_key,
             sirets=sirets or None,
             force=force,
             limit=limit,
             use_ollama=False,
-        )
-    except Exception as e:
-        logger.exception("Scan contacts échoué")
-        return jsonify({"error": str(e)}), 500
-
-    return jsonify({"ok": True, **result})
+        ),
+        kind="contacts",
+    )
+    return jsonify({"job_id": job_id}), 202
 
 
 @bp.route("/api/scan/contacts/<siret>", methods=["POST"])
@@ -284,18 +284,18 @@ def scan_frenchtech():
         resolve_siret,
         resolve_emails,
     )
-    try:
-        result = run_frenchtech_scan(
+    job_id = jobs.create_job("frenchtech", params={"tech_only": tech_only})
+    jobs.submit_job(
+        job_id,
+        lambda: run_frenchtech_scan(
             tech_only=tech_only,
             resolve_siret=bool(resolve_siret),
             resolve_emails=bool(resolve_emails),
             geocode=bool(geocode),
-        )
-    except Exception as e:
-        logger.exception("Scan French Tech échoué")
-        return jsonify({"error": str(e)}), 500
-
-    return jsonify({"ok": True, **result})
+        ),
+        kind="frenchtech",
+    )
+    return jsonify({"job_id": job_id}), 202
 
 
 @bp.route("/api/mark-hors-champs", methods=["POST"])
@@ -363,8 +363,12 @@ def prune_entreprises():
         force_recompute,
         delete_unknown_employees,
     )
-    try:
-        result = run_prune(
+    job_id = jobs.create_job(
+        "prune", params={"min_employees": min_employees, "max_travel_min": max_travel_min}
+    )
+    jobs.submit_job(
+        job_id,
+        lambda: run_prune(
             min_employees=min_employees,
             max_travel_min=max_travel_min,
             origin=origin,
@@ -372,10 +376,7 @@ def prune_entreprises():
             sleep=max(0.0, sleep),
             delete_unavailable_travel=delete_unavailable,
             delete_unknown_employees=delete_unknown_employees,
-        )
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        logger.exception("Prune échoué")
-        return jsonify({"error": str(e)}), 500
-    return jsonify(result)
+        ),
+        kind="prune",
+    )
+    return jsonify({"job_id": job_id}), 202

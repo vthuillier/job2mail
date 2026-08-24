@@ -278,6 +278,45 @@ def pick_company_links(
     return {"site_web": site, "linkedin_company": linkedin}
 
 
+def extract_cv_keywords_ollama(text: str) -> list[str] | None:
+    """
+    Extrait compétences / technologies / intitulés de poste d'un texte de CV.
+    Retourne None si Ollama indisponible / échec (le caller bascule en heuristique).
+    """
+    if not ollama_available():
+        return None
+
+    payload = {
+        "model": _model(),
+        "stream": False,
+        "think": False,
+        "format": "json",
+        "keep_alive": "10m",
+        "options": {"temperature": 0, "num_predict": 200, "num_ctx": 4096},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    'Reply JSON only: {"keywords": ["...", ...]}. '
+                    "Extract up to 25 technical skills, technologies, tools and job "
+                    "titles from the CV text below. Lowercase, no duplicates, no "
+                    "generic words (e.g. not \"expérience\" or \"projet\")."
+                ),
+            },
+            {"role": "user", "content": text[:4000]},
+        ],
+    }
+
+    logger.info("Ollama — extraction mots-clés CV")
+    data = _call_ollama(payload, retries=1)
+    if not data:
+        return None
+    keywords = data.get("keywords")
+    if not isinstance(keywords, list):
+        return None
+    return [str(k).strip().lower() for k in keywords if str(k).strip()][:25]
+
+
 _REPLY_CLASSES = frozenset({"offre", "entretien", "refus", "autre"})
 
 

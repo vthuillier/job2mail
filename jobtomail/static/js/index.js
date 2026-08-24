@@ -25,6 +25,25 @@ function activatePage(page) {
     btn.addEventListener("click", () => activatePage(btn.dataset.page));
   });
 
+  async function pollJob(jobId, { intervalMs = 1500 } = {}) {
+    while (true) {
+      const res = await fetch(`/api/jobs/${jobId}`).then((r) => r.json());
+      if (res.status === "done") return res.result;
+      if (res.status === "error") throw new Error(res.error || "Le job a échoué");
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+
+  async function startJob(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    }).then((r) => r.json());
+    if (res.error) throw new Error(res.error);
+    return pollJob(res.job_id);
+  }
+
   function setView(view) {
     state.view = view;
     document.getElementById("view-list").classList.toggle("active", view === "list");
@@ -481,6 +500,7 @@ function activatePage(page) {
     }
     renderNafs(true);
     renderCfgNafs(true);
+    renderCvProfileStatus(cfg.cv_profile);
 
     if (cfg.needs_setup) {
       activatePage("config");
@@ -1170,6 +1190,39 @@ function activatePage(page) {
     await loadConfig();
   });
 
+  function renderCvProfileStatus(profile) {
+    const el = document.getElementById("cv-profile-status");
+    if (!el) return;
+    if (!profile) {
+      el.textContent = "Extrait des mots-clés de cv.pdf pour affiner le score de pertinence des entreprises.";
+      return;
+    }
+    const n = (profile.keywords || []).length;
+    el.textContent = `${n} mot(s)-clé(s) extrait(s) (${profile.source}) — ${new Date(profile.extracted_at).toLocaleString()}`;
+  }
+
+  document.getElementById("btn-analyze-cv")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-analyze-cv");
+    btn.disabled = true;
+    const prevText = btn.textContent;
+    btn.textContent = "Analyse en cours…";
+    try {
+      const res = await fetch("/api/cv/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      }).then((r) => r.json());
+      if (res.error) return toast(res.error, "error");
+      renderCvProfileStatus(res);
+      toast(`CV analysé — ${(res.keywords || []).length} mot(s)-clé(s) (${res.source})`);
+    } catch (err) {
+      toast(String(err.message || err), "error");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = prevText;
+    }
+  });
+
   document.getElementById("btn-cfg-add-naf").addEventListener("click", () => {
     const code = document.getElementById("cfg-naf-code").value.trim();
     const lib = document.getElementById("cfg-naf-lib").value.trim() || code;
@@ -1212,21 +1265,13 @@ function activatePage(page) {
       );
     }
     try {
-      const res = await fetch("/api/prune", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          min_employees: minEmployees,
-          max_travel_min: maxTravel,
-          origin: document.getElementById("scan-point").value.trim() || currentTravelOrigin(),
-          force_recompute: force,
-          delete_unknown_employees: deleteUnknownEmployees,
-        }),
-      }).then((r) => r.json());
-      if (res.error) {
-        toast(res.error, "error");
-        return null;
-      }
+      const res = await startJob("/api/prune", {
+        min_employees: minEmployees,
+        max_travel_min: maxTravel,
+        origin: document.getElementById("scan-point").value.trim() || currentTravelOrigin(),
+        force_recompute: force,
+        delete_unknown_employees: deleteUnknownEmployees,
+      });
       toast(
         `Prune OK — ${res.initial} → ${res.final}` +
           ` (−${res.deleted_lt_min_employees} effectif, −${res.deleted_gt_max_travel} trajet` +
@@ -1235,6 +1280,9 @@ function activatePage(page) {
           `)`
       );
       return res;
+    } catch (err) {
+      toast(String(err.message || err), "error");
+      return null;
     } finally {
       if (!silent) {
         btn.disabled = false;
@@ -1292,10 +1340,8 @@ function activatePage(page) {
     btn.disabled = true;
     btn.innerHTML = `<span class="spinner"></span> Scan Sirene…`;
 
-    const res = await fetch("/api/scan/sirene", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    try {
+      const res = await startJob("/api/scan/sirene", {
         point_ref: document.getElementById("scan-point").value.trim(),
         rayon_km: document.getElementById("scan-rayon").value,
         departements: document.getElementById("scan-depts").value,
@@ -1303,37 +1349,34 @@ function activatePage(page) {
         include_mairies: includeMairies,
         include_associations: includeAssociations,
         INSEE_TOKEN: state.config.INSEE_TOKEN,
-      }),
-    }).then((r) => r.json());
+      });
 
-    if (res.error) {
+      const clean = res.clean || {};
+      const extras = [
+        res.added_mairies ? `+${res.added_mairies} mairie(s)` : "",
+        res.added_associations ? `+${res.added_associations} association(s)` : "",
+      ]
+        .filter(Boolean)
+        .join(", ");
+      toast(
+        `Scan OK — +${res.added} brutes` +
+          (extras ? ` (${extras})` : "") +
+          ` → ${clean.after ?? "?"} après nettoyage` +
+          (clean.excluded_effectif ? ` (−${clean.excluded_effectif} petites)` : "")
+      );
+
+      if (document.getElementById("scan-auto-prune").checked) {
+        btn.innerHTML = `<span class="spinner"></span> Prune…`;
+        await runPrune({ silent: true });
+      }
+      await loadEntreprises();
+      document.querySelector('.nav-btn[data-page="entreprises"]').click();
+    } catch (err) {
+      toast(String(err.message || err), "error");
+    } finally {
       btn.disabled = false;
       btn.textContent = "Lancer le scan Sirene + nettoyage";
-      return toast(res.error, "error");
     }
-    const clean = res.clean || {};
-    const extras = [
-      res.added_mairies ? `+${res.added_mairies} mairie(s)` : "",
-      res.added_associations ? `+${res.added_associations} association(s)` : "",
-    ]
-      .filter(Boolean)
-      .join(", ");
-    toast(
-      `Scan OK — +${res.added} brutes` +
-        (extras ? ` (${extras})` : "") +
-        ` → ${clean.after ?? "?"} après nettoyage` +
-        (clean.excluded_effectif ? ` (−${clean.excluded_effectif} petites)` : "")
-    );
-
-    if (document.getElementById("scan-auto-prune").checked) {
-      btn.innerHTML = `<span class="spinner"></span> Prune…`;
-      await runPrune({ silent: true });
-    }
-
-    btn.disabled = false;
-    btn.textContent = "Lancer le scan Sirene + nettoyage";
-    await loadEntreprises();
-    document.querySelector('.nav-btn[data-page="entreprises"]').click();
   });
 
   document.getElementById("btn-clean").addEventListener("click", async () => {
@@ -1357,19 +1400,11 @@ function activatePage(page) {
     btn.innerHTML = `<span class="spinner"></span> Import French Tech…`;
     toast("Import French Tech Toulon en cours (peut prendre 1–2 min)…");
     try {
-      const res = await fetch("/api/scan/frenchtech", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tech_only: document.getElementById("ft-tech-only").checked,
-          resolve_siret: document.getElementById("ft-resolve-siret").checked,
-          resolve_emails: document.getElementById("ft-resolve-emails").checked,
-        }),
-      }).then((r) => r.json());
-      if (res.error) {
-        toast(res.error, "error");
-        return;
-      }
+      const res = await startJob("/api/scan/frenchtech", {
+        tech_only: document.getElementById("ft-tech-only").checked,
+        resolve_siret: document.getElementById("ft-resolve-siret").checked,
+        resolve_emails: document.getElementById("ft-resolve-emails").checked,
+      });
       toast(
         `French Tech — ${res.scraped} lues, +${res.added} ajoutées` +
           (res.matched_existing ? `, ${res.matched_existing} déjà en base enrichies` : "") +
@@ -1377,6 +1412,8 @@ function activatePage(page) {
       );
       await loadEntreprises();
       document.querySelector('.nav-btn[data-page="entreprises"]').click();
+    } catch (err) {
+      toast(String(err.message || err), "error");
     } finally {
       btn.disabled = false;
       btn.textContent = "Importer French Tech Toulon";
@@ -1422,17 +1459,16 @@ function activatePage(page) {
 
   async function runSerpApi() {
     toast("SerpAPI + Ollama (1 req Google / entreprise)…");
-    const res = await fetch("/api/scan/serpapi", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    try {
+      const res = await startJob("/api/scan/serpapi", {
         SERPAPI_KEY: state.config.SERPAPI_KEY,
         use_ollama: true,
-      }),
-    }).then((r) => r.json());
-    if (res.error) return toast(res.error, "error");
-    toast(`SerpAPI terminé — ${res.scanned} entreprise(s)${res.ollama ? " (Ollama OK)" : " (sans Ollama)"}`);
-    await loadEntreprises();
+      });
+      toast(`SerpAPI terminé — ${res.scanned} entreprise(s)${res.ollama ? " (Ollama OK)" : " (sans Ollama)"}`);
+      await loadEntreprises();
+    } catch (err) {
+      toast(String(err.message || err), "error");
+    }
   }
 
   document.getElementById("btn-serpapi").addEventListener("click", runSerpApi);
@@ -1440,16 +1476,15 @@ function activatePage(page) {
 
   async function runDirigeants() {
     toast("Récupération des dirigeants (API Recherche d'Entreprises)…");
-    const res = await fetch("/api/scan/dirigeants", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    }).then((r) => r.json());
-    if (res.error) return toast(res.error, "error");
-    toast(
-      `Dirigeants — ${res.filled} trouvé(s), ${res.not_found} sans personne physique, ${res.errors} erreur(s)`
-    );
-    await loadEntreprises();
+    try {
+      const res = await startJob("/api/scan/dirigeants", {});
+      toast(
+        `Dirigeants — ${res.filled} trouvé(s), ${res.not_found} sans personne physique, ${res.errors} erreur(s)`
+      );
+      await loadEntreprises();
+    } catch (err) {
+      toast(String(err.message || err), "error");
+    }
   }
 
   document.getElementById("btn-dirigeants").addEventListener("click", runDirigeants);
@@ -1465,18 +1500,13 @@ function activatePage(page) {
     const buttons = [document.getElementById("btn-contacts"), document.getElementById("btn-contacts-2")].filter(Boolean);
     buttons.forEach((b) => { b.disabled = true; });
     try {
-      const res = await fetch("/api/scan/contacts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }).then((r) => r.json());
-      if (res.error) return toast(res.error, "error");
+      const res = await startJob("/api/scan/contacts", body);
       toast(
         `Contacts — ${res.filled} trouvé(s), ${res.not_found} sans profil, ${res.skipped} ignoré(s), ${res.errors} erreur(s) (${res.processed} traitées)`
       );
       await loadEntreprises();
     } catch (err) {
-      toast(String(err), "error");
+      toast(String(err.message || err), "error");
     } finally {
       buttons.forEach((b) => { b.disabled = false; });
     }

@@ -117,6 +117,21 @@ def init_db() -> None:
         )
         """
     )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            params TEXT,
+            progress TEXT,
+            result TEXT,
+            error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     _migrate(conn)
     conn.commit()
     conn.close()
@@ -165,6 +180,76 @@ def env_or_config(key: str, *aliases: str) -> str:
         if val:
             return val.strip()
     return ""
+
+
+def create_job_row(job_id: str, kind: str, params: dict[str, Any] | None = None) -> None:
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO jobs (id, kind, status, params) VALUES (?, ?, 'queued', ?)",
+        (job_id, kind, json.dumps(params or {}, ensure_ascii=False)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_job_row(
+    job_id: str,
+    *,
+    status: str | None = None,
+    progress: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    fields: dict[str, Any] = {}
+    if status is not None:
+        fields["status"] = status
+    if progress is not None:
+        fields["progress"] = json.dumps(progress, ensure_ascii=False)
+    if result is not None:
+        fields["result"] = json.dumps(result, ensure_ascii=False)
+    if error is not None:
+        fields["error"] = error
+    if not fields:
+        return
+    fields["updated_at"] = "CURRENT_TIMESTAMP"
+    set_clause = ", ".join(
+        f"{k} = CURRENT_TIMESTAMP" if v == "CURRENT_TIMESTAMP" else f"{k} = ?"
+        for k, v in fields.items()
+    )
+    values = [v for v in fields.values() if v != "CURRENT_TIMESTAMP"]
+    conn = get_db()
+    conn.execute(f"UPDATE jobs SET {set_clause} WHERE id = ?", (*values, job_id))
+    conn.commit()
+    conn.close()
+
+
+def get_job_row(job_id: str) -> dict[str, Any] | None:
+    conn = get_db()
+    row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    data = dict(row)
+    for key in ("params", "progress", "result"):
+        if data.get(key):
+            try:
+                data[key] = json.loads(data[key])
+            except json.JSONDecodeError:
+                pass
+    return data
+
+
+def delete_old_jobs(max_age_hours: int = 24) -> int:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM jobs WHERE created_at < datetime('now', ?)",
+        (f"-{max_age_hours} hours",),
+    )
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 def load_nafs(cfg: dict[str, str] | None = None) -> dict[str, str]:

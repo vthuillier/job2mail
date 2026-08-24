@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -17,6 +18,7 @@ from jobtomail.constants import (
     OLLAMA_MODEL,
 )
 from jobtomail import db
+from jobtomail.services.cv_profile import extract_cv_profile
 from jobtomail.services.ollama import ollama_available
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,13 @@ def api_config():
     insee_token = cfg.get("INSEE_TOKEN") or os.getenv("INSEE_TOKEN", "")
     needs_setup = not (candidate_name and email_address and insee_token)
 
+    cv_profile = None
+    if cfg.get("cv_profile"):
+        try:
+            cv_profile = json.loads(cfg["cv_profile"])
+        except json.JSONDecodeError:
+            cv_profile = None
+
     return jsonify(
         {
             "INSEE_TOKEN": insee_token,
@@ -69,8 +78,19 @@ def api_config():
             "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL") or OLLAMA_MODEL,
             "ollama_available": ollama_available(),
             "needs_setup": needs_setup,
+            "cv_profile": cv_profile,
         }
     )
+
+
+@bp.route("/api/cv/analyze", methods=["POST"])
+def analyze_cv():
+    data = request.get_json(silent=True) or {}
+    force = bool(data.get("force", True))
+    profile = extract_cv_profile(force=force)
+    if profile is None:
+        return jsonify({"error": "cv.pdf introuvable — place le fichier à la racine du projet"}), 400
+    return jsonify(profile)
 
 
 @bp.route("/api/db/reset", methods=["POST"])

@@ -18,6 +18,7 @@ from jobtomail.routes.auth import auth_enabled, bp as auth_bp, is_authenticated
 from jobtomail.routes.config_routes import bp as config_bp
 from jobtomail.routes.email_routes import bp as email_bp
 from jobtomail.routes.entreprises import bp as entreprises_bp
+from jobtomail.routes.jobs_routes import bp as jobs_bp
 from jobtomail.routes.scans import bp as scans_bp
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ def create_app() -> Flask:
     app.register_blueprint(entreprises_bp)
     app.register_blueprint(scans_bp)
     app.register_blueprint(email_bp)
+    app.register_blueprint(jobs_bp)
 
     @app.before_request
     def require_auth():
