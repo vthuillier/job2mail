@@ -9,3 +9,44 @@ services:
       - path: .env
         required: false
     restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: jobtomail
+      POSTGRES_PASSWORD: jobtomail
+      POSTGRES_DB: jobtomail
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobtomail"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  mariadb:
+    image: mariadb:11
+    profiles: ["mariadb"]
+    environment:
+      MARIADB_USER: jobtomail
+      MARIADB_PASSWORD: jobtomail
+      MARIADB_DATABASE: jobtomail
+      MARIADB_ROOT_PASSWORD: jobtomail-root
+    ports:
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  mariadb_data:

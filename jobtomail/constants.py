@@ -6,6 +6,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = BASE_DIR / "jobtomail.db"
+DB_CONFIG_PATH = BASE_DIR / "db_config.json"
 CV_PATH = BASE_DIR / "cv.pdf"
 LOGS_DIR = BASE_DIR / "logs"
 TEMPLATES_DIR = BASE_DIR / "templates"

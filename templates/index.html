@@ -380,6 +380,46 @@
         </div>
       </div>
 
+      <div class="config-section">
+        <h3>Base de données</h3>
+        <p class="help" id="db-backend-status">Backend actuel : SQLite (fichier local).</p>
+        <div class="form-group">
+          <label class="form-label">Backend</label>
+          <select id="db-backend-select" class="form-control">
+            <option value="sqlite">SQLite (par défaut)</option>
+            <option value="postgres">PostgreSQL</option>
+            <option value="mariadb">MariaDB</option>
+          </select>
+        </div>
+        <div id="db-backend-fields" style="display:none;">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Hôte</label>
+              <input id="db-host" class="form-control" placeholder="localhost">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Port</label>
+              <input id="db-port" class="form-control" placeholder="5432">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Utilisateur</label>
+              <input id="db-user" class="form-control">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Mot de passe</label>
+              <input id="db-password" type="password" class="form-control">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Nom de la base</label>
+            <input id="db-dbname" class="form-control">
+          </div>
+        </div>
+        <button class="btn btn-secondary" id="btn-db-backend-save" type="button">Tester et enregistrer</button>
+      </div>
+
       <button class="btn btn-primary" id="btn-save-cfg" style="width:100%;">Sauvegarder tous les paramètres</button>
     </div>
   </section>

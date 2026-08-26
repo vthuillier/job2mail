@@ -5,13 +5,17 @@ import pytest
 
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
-    """DB SQLite temporaire — db.py lie DB_PATH à l'import, patcher constants.py seul ne suffit pas."""
+    """DB SQLite temporaire, isolée : DB_PATH et db_config.json redirigés vers tmp_path."""
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr("jobtomail.db.DB_PATH", db_path)
-    from jobtomail.db import init_db
+    monkeypatch.setattr("jobtomail.db_config.DB_PATH", db_path)
+    monkeypatch.setattr("jobtomail.db_config.DB_CONFIG_PATH", tmp_path / "db_config.json")
+    monkeypatch.delenv("DB_BACKEND", raising=False)
+    from jobtomail import db
 
-    init_db()
+    db.reset_engine()
+    db.init_db()
     yield db_path
+    db.reset_engine()
 
 
 @pytest.fixture

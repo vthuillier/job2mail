@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
 import time
 import uuid
 
@@ -144,7 +143,7 @@ def create_entreprise():
 
     try:
         db.insert_entreprise(row)
-    except sqlite3.IntegrityError:
+    except db.DuplicateSiretError:
         return jsonify({"error": f"Une entreprise avec le SIRET {siret} existe déjà"}), 409
 
     created = db.get_entreprise(siret)

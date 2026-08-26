@@ -47,3 +47,9 @@ def test_scan_sirene_missing_token_returns_400(client):
 def test_prune_invalid_min_employees_returns_400(client):
     res = client.post("/api/prune", json={"min_employees": "not-a-number"})
     assert res.status_code == 400
+
+
+def test_index_page_has_db_backend_section(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    assert b'id="db-backend-select"' in res.data

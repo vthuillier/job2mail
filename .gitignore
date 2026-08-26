@@ -1,4 +1,7 @@
 .env
+.env.*
+!.env.example
+db_config.json
 jobtomail.db
 *.db.bk
 *.backup-*.db

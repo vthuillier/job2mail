@@ -7,6 +7,8 @@ import logging
 import os
 
 from flask import Blueprint, jsonify, render_template, request
+from sqlalchemy import create_engine, text as sa_text
+from sqlalchemy.exc import SQLAlchemyError
 
 from jobtomail.constants import (
     DEFAULT_MAIL_BODY,
@@ -17,7 +19,7 @@ from jobtomail.constants import (
     MOTS_CLES_POSTE,
     OLLAMA_MODEL,
 )
-from jobtomail import db
+from jobtomail import db, db_config
 from jobtomail.services.cv_profile import extract_cv_profile
 from jobtomail.services.ollama import ollama_available
 
@@ -98,3 +100,70 @@ def reset_db():
     logger.warning("POST /api/db/reset — vidage entreprises demandé")
     count = db.reset_entreprises()
     return jsonify({"ok": True, "deleted": count})
+
+
+@bp.route("/api/db/backend", methods=["GET"])
+def get_db_backend():
+    cfg = db_config.resolve_db_config()
+    return jsonify(
+        {
+            "backend": cfg.backend,
+            "host": cfg.host,
+            "port": cfg.port,
+            "user": cfg.user,
+            "dbname": cfg.dbname,
+            "source": cfg.source,
+            "locked": cfg.source == "env",
+        }
+    )
+
+
+@bp.route("/api/db/backend", methods=["POST"])
+def set_db_backend():
+    current = db_config.resolve_db_config()
+    if current.source == "env":
+        return jsonify(
+            {"error": "Backend DB imposé par DB_BACKEND (variable d'environnement) — non modifiable ici"}
+        ), 409
+
+    data = request.get_json(force=True) or {}
+    backend = str(data.get("backend", "")).strip().lower()
+    if backend not in ("sqlite", "postgres", "mariadb"):
+        return jsonify({"error": "backend doit être sqlite, postgres ou mariadb"}), 400
+
+    if backend == "sqlite":
+        db_config.delete_db_config_file()
+    else:
+        candidate = db_config.DbConfig(
+            backend=backend,
+            host=str(data.get("host", "")).strip(),
+            port=str(data.get("port", "")).strip(),
+            user=str(data.get("user", "")).strip(),
+            password=str(data.get("password", "")).strip(),
+            dbname=str(data.get("dbname", "")).strip(),
+            source="file",
+        )
+        try:
+            test_engine = create_engine(candidate.url())
+            with test_engine.connect() as conn:
+                conn.execute(sa_text("SELECT 1"))
+            test_engine.dispose()
+        except (SQLAlchemyError, ValueError) as exc:
+            logger.warning("Connexion DB refusée pour backend=%s : %s", backend, exc)
+            return jsonify({"error": f"Connexion impossible : {exc}"}), 400
+
+        db_config.write_db_config_file(
+            {
+                "backend": backend,
+                "host": candidate.host,
+                "port": candidate.port,
+                "user": candidate.user,
+                "password": candidate.password,
+                "dbname": candidate.dbname,
+            }
+        )
+
+    db.reset_engine()
+    db.init_db()
+    logger.warning("Backend DB changé : %s", backend)
+    return jsonify({"ok": True, "backend": backend})

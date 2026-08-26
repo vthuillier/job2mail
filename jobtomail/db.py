@@ -1,195 +1,139 @@
-"""Accès SQLite et configuration persistée."""
+"""Accès DB (SQLite / PostgreSQL / MariaDB) et configuration persistée."""
 
 from __future__ import annotations
 
 import json
 import logging
-import os
-import sqlite3
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from jobtomail.constants import DB_PATH, DEFAULT_NAF_CODES
+from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy.dialects import mysql, postgresql, sqlite
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
+
+from jobtomail.constants import DEFAULT_NAF_CODES
+from jobtomail.db_config import resolve_db_config
+from jobtomail.schema import (
+    config as config_table,
+    entreprises as entreprises_table,
+    metadata,
+    processed_replies as processed_replies_table,
+)
 
 logger = logging.getLogger(__name__)
 
-_EXTRA_COLUMNS = {
-    "est_siege": "INTEGER DEFAULT 0",
-    "categorie_entreprise": "TEXT",
-    "categorie_juridique": "TEXT",
-    "nature": "TEXT DEFAULT 'entreprise'",
-    "score_pertinence": "REAL DEFAULT 0",
-    "latitude": "REAL",
-    "longitude": "REAL",
-    "geocode_failed": "INTEGER DEFAULT 0",
-    "dirigeants_scanned": "INTEGER DEFAULT 0",
-    "email_message_id": "TEXT",
-    "email_subject": "TEXT",
-    "email_body": "TEXT",
-    "email_sent_at": "TEXT",
-    "relance_count": "INTEGER DEFAULT 0",
-    "last_relance_at": "TEXT",
-    "reply_message_id": "TEXT",
-    "reply_class": "TEXT",
-    "reply_classified_at": "TEXT",
-    "reply_from": "TEXT",
-    "reply_subject": "TEXT",
-    "contact_source": "TEXT",
-    "email_hunter_score": "INTEGER",
-    "email_quality": "TEXT",
-    "email_quality_note": "TEXT",
-    "accroche": "TEXT",
-    "entretien_date": "TEXT",
-    "entretien_next_step": "TEXT",
-    "entretien_rappel_at": "TEXT",
-    "travel_origin": "TEXT",
-    "travel_duration_min": "REAL",
-    "travel_distance_km": "REAL",
-    "travel_without_tolls": "INTEGER DEFAULT 0",
-    "travel_updated_at": "TEXT",
+_ENGINE: Engine | None = None
+
+# Défauts appliqués aux colonnes ajoutées après coup par ALTER TABLE (les
+# nouvelles installations les reçoivent déjà via server_default dans schema.py).
+_COLUMN_ALTER_DEFAULTS = {
+    "est_siege": "0",
+    "nature": "'entreprise'",
+    "score_pertinence": "0",
+    "geocode_failed": "0",
+    "dirigeants_scanned": "0",
+    "relance_count": "0",
+    "travel_without_tolls": "0",
 }
 
 
-def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+class DuplicateSiretError(Exception):
+    """Levée quand un SIRET existe déjà (contrainte PK entreprises)."""
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(entreprises)").fetchall()}
-    for col, typedef in _EXTRA_COLUMNS.items():
-        if col not in existing:
-            logger.info("Migration SQLite : ajout colonne entreprises.%s", col)
-            conn.execute(f"ALTER TABLE entreprises ADD COLUMN {col} {typedef}")
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_engine() -> Engine:
+    global _ENGINE
+    if _ENGINE is None:
+        cfg = resolve_db_config()
+        logger.info("Backend DB : %s (source=%s)", cfg.backend, cfg.source)
+        _ENGINE = create_engine(cfg.url(), future=True)
+    return _ENGINE
+
+
+def reset_engine() -> None:
+    """Invalide le cache d'engine (tests, ou changement de backend à chaud)."""
+    global _ENGINE
+    if _ENGINE is not None:
+        _ENGINE.dispose()
+    _ENGINE = None
+
+
+def _insert_ignore(conn, table, values: dict[str, Any]) -> bool:
+    """INSERT qui ne fait rien si la ligne existe déjà. Retourne True si insérée."""
+    dialect = conn.engine.dialect.name
+    if dialect == "sqlite":
+        stmt = sqlite.insert(table).values(**values).on_conflict_do_nothing()
+    elif dialect == "postgresql":
+        stmt = postgresql.insert(table).values(**values).on_conflict_do_nothing()
+    elif dialect == "mysql":
+        stmt = mysql.insert(table).values(**values).prefix_with("IGNORE")
+    else:
+        raise ValueError(f"Dialecte non supporté : {dialect}")
+    result = conn.execute(stmt)
+    return result.rowcount > 0
+
+
+def _insert_replace(conn, table, values: dict[str, Any], pk_col: str) -> None:
+    """Upsert : insère, ou met à jour si la clé primaire existe déjà."""
+    update_cols = {k: v for k, v in values.items() if k != pk_col}
+    dialect = conn.engine.dialect.name
+    if dialect == "sqlite":
+        stmt = sqlite.insert(table).values(**values)
+        stmt = stmt.on_conflict_do_update(index_elements=[pk_col], set_=update_cols)
+    elif dialect == "postgresql":
+        stmt = postgresql.insert(table).values(**values)
+        stmt = stmt.on_conflict_do_update(index_elements=[pk_col], set_=update_cols)
+    elif dialect == "mysql":
+        stmt = mysql.insert(table).values(**values)
+        stmt = stmt.on_duplicate_key_update(**update_cols)
+    else:
+        raise ValueError(f"Dialecte non supporté : {dialect}")
+    conn.execute(stmt)
 
 
 def init_db() -> None:
-    logger.info("Initialisation de la base SQLite : %s", DB_PATH)
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS config (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS entreprises (
-            siret TEXT PRIMARY KEY,
-            siren TEXT,
-            denomination TEXT NOT NULL,
-            adresse TEXT,
-            commune TEXT,
-            effectif_code TEXT,
-            effectif_libelle TEXT,
-            naf_code TEXT,
-            naf_libelle TEXT,
-            date_creation TEXT,
-            est_siege INTEGER DEFAULT 0,
-            categorie_entreprise TEXT,
-            score_pertinence REAL DEFAULT 0,
-            site_web TEXT,
-            linkedin_company TEXT,
-            serpapi_scanned INTEGER DEFAULT 0,
-            contact_prenom TEXT,
-            contact_nom TEXT,
-            contact_genre TEXT,
-            contact_poste TEXT,
-            contact_email TEXT,
-            contact_linkedin TEXT,
-            status TEXT DEFAULT 'a_postuler',
-            notes TEXT,
-            dirigeants_scanned INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS processed_replies (
-            message_id TEXT PRIMARY KEY,
-            siret TEXT,
-            classification TEXT,
-            processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS jobs (
-            id TEXT PRIMARY KEY,
-            kind TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'queued',
-            params TEXT,
-            progress TEXT,
-            result TEXT,
-            error TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-    _migrate(conn)
-    conn.commit()
-    conn.close()
-    logger.info("Base SQLite prête")
+    engine = get_engine()
+    logger.info("Initialisation de la base (%s)", engine.dialect.name)
+    metadata.create_all(engine, checkfirst=True)
+    _migrate(engine)
+    logger.info("Base prête")
 
 
-def get_config_value(key: str, default: str = "") -> str:
-    conn = get_db()
-    row = conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
-    conn.close()
-    if row and row["value"]:
-        return row["value"]
-    return default
-
-
-def set_config_values(data: dict[str, Any]) -> None:
-    conn = get_db()
-    cursor = conn.cursor()
-    for k, v in data.items():
-        if isinstance(v, (dict, list)):
-            v = json.dumps(v, ensure_ascii=False)
-        cursor.execute(
-            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
-            (k, str(v) if v is not None else ""),
-        )
-    conn.commit()
-    conn.close()
-    logger.info("Config mise à jour (%d clé(s)) : %s", len(data), ", ".join(data.keys()))
-
-
-def get_all_config() -> dict[str, str]:
-    conn = get_db()
-    rows = conn.execute("SELECT key, value FROM config").fetchall()
-    conn.close()
-    return {row["key"]: row["value"] for row in rows}
-
-
-def env_or_config(key: str, *aliases: str) -> str:
-    """Lit d'abord .env, puis la config SQLite (avec alias éventuels)."""
-    for name in (key, *aliases):
-        val = os.getenv(name)
-        if val:
-            return val.strip()
-    for name in (key, *aliases):
-        val = get_config_value(name)
-        if val:
-            return val.strip()
-    return ""
+def _migrate(engine: Engine) -> None:
+    inspector = inspect(engine)
+    existing = {col["name"] for col in inspector.get_columns("entreprises")}
+    with engine.begin() as conn:
+        for col in entreprises_table.columns:
+            if col.name in existing:
+                continue
+            coltype = col.type.compile(dialect=engine.dialect)
+            ddl = f"ALTER TABLE entreprises ADD COLUMN {col.name} {coltype}"
+            default = _COLUMN_ALTER_DEFAULTS.get(col.name)
+            if default is not None:
+                ddl += f" DEFAULT {default}"
+            logger.info("Migration : ajout colonne entreprises.%s", col.name)
+            conn.exec_driver_sql(ddl)
 
 
 def create_job_row(job_id: str, kind: str, params: dict[str, Any] | None = None) -> None:
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO jobs (id, kind, status, params) VALUES (?, ?, 'queued', ?)",
-        (job_id, kind, json.dumps(params or {}, ensure_ascii=False)),
-    )
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO jobs (id, kind, status, params, created_at, updated_at) "
+                "VALUES (:id, :kind, 'queued', :params, :now, :now)"
+            ),
+            {
+                "id": job_id,
+                "kind": kind,
+                "params": json.dumps(params or {}, ensure_ascii=False),
+                "now": _now(),
+            },
+        )
 
 
 def update_job_row(
@@ -211,22 +155,17 @@ def update_job_row(
         fields["error"] = error
     if not fields:
         return
-    fields["updated_at"] = "CURRENT_TIMESTAMP"
-    set_clause = ", ".join(
-        f"{k} = CURRENT_TIMESTAMP" if v == "CURRENT_TIMESTAMP" else f"{k} = ?"
-        for k, v in fields.items()
-    )
-    values = [v for v in fields.values() if v != "CURRENT_TIMESTAMP"]
-    conn = get_db()
-    conn.execute(f"UPDATE jobs SET {set_clause} WHERE id = ?", (*values, job_id))
-    conn.commit()
-    conn.close()
+    fields["updated_at"] = _now()
+    set_clause = ", ".join(f"{k} = :{k}" for k in fields)
+    params = dict(fields)
+    params["id"] = job_id
+    with get_engine().begin() as conn:
+        conn.execute(text(f"UPDATE jobs SET {set_clause} WHERE id = :id"), params)
 
 
 def get_job_row(job_id: str) -> dict[str, Any] | None:
-    conn = get_db()
-    row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    conn.close()
+    with get_engine().connect() as conn:
+        row = conn.execute(text("SELECT * FROM jobs WHERE id = :id"), {"id": job_id}).mappings().first()
     if not row:
         return None
     data = dict(row)
@@ -240,48 +179,30 @@ def get_job_row(job_id: str) -> dict[str, Any] | None:
 
 
 def delete_old_jobs(max_age_hours: int = 24) -> int:
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        "DELETE FROM jobs WHERE created_at < datetime('now', ?)",
-        (f"-{max_age_hours} hours",),
-    )
-    deleted = cursor.rowcount
-    conn.commit()
-    conn.close()
-    return deleted
+    threshold = (datetime.utcnow() - timedelta(hours=max_age_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_engine().begin() as conn:
+        result = conn.execute(text("DELETE FROM jobs WHERE created_at < :threshold"), {"threshold": threshold})
+    return result.rowcount
 
 
-def load_nafs(cfg: dict[str, str] | None = None) -> dict[str, str]:
-    cfg = cfg if cfg is not None else get_all_config()
-    nafs_raw = cfg.get("nafs")
-    if not nafs_raw:
-        return dict(DEFAULT_NAF_CODES)
-    try:
-        parsed = json.loads(nafs_raw)
-        if isinstance(parsed, dict) and parsed:
-            return parsed
-    except json.JSONDecodeError:
-        logger.warning("Config nafs invalide, fallback sur les NAF par défaut")
-    return dict(DEFAULT_NAF_CODES)
-
-
-def list_entreprises() -> list[sqlite3.Row]:
-    conn = get_db()
-    rows = conn.execute(
-        """
-        SELECT * FROM entreprises
-        ORDER BY COALESCE(score_pertinence, 0) DESC, denomination COLLATE NOCASE ASC
-        """
-    ).fetchall()
-    conn.close()
+def list_entreprises():
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT * FROM entreprises
+                ORDER BY COALESCE(score_pertinence, 0) DESC, LOWER(denomination) ASC
+                """
+            )
+        ).mappings().all()
     return list(rows)
 
 
-def get_entreprise(siret: str) -> sqlite3.Row | None:
-    conn = get_db()
-    row = conn.execute("SELECT * FROM entreprises WHERE siret = ?", (siret,)).fetchone()
-    conn.close()
+def get_entreprise(siret: str):
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            text("SELECT * FROM entreprises WHERE siret = :siret"), {"siret": siret}
+        ).mappings().first()
     return row
 
 
@@ -289,117 +210,87 @@ def update_entreprise(siret: str, fields: dict[str, Any]) -> bool:
     existing = get_entreprise(siret)
     if not existing:
         return False
-    keys = list(fields.keys())
-    values = [fields[k] for k in keys]
-    query = "UPDATE entreprises SET " + ", ".join(f"{k} = ?" for k in keys) + " WHERE siret = ?"
-    conn = get_db()
-    conn.execute(query, values + [siret])
-    conn.commit()
-    conn.close()
-    logger.info("Entreprise %s mise à jour (%s)", siret, ", ".join(keys))
+    set_clause = ", ".join(f"{k} = :{k}" for k in fields)
+    params = dict(fields)
+    params["siret"] = siret
+    with get_engine().begin() as conn:
+        conn.execute(text(f"UPDATE entreprises SET {set_clause} WHERE siret = :siret"), params)
+    logger.info("Entreprise %s mise à jour (%s)", siret, ", ".join(fields.keys()))
     return True
 
 
 def delete_entreprise(siret: str) -> None:
-    conn = get_db()
-    conn.execute("DELETE FROM entreprises WHERE siret = ?", (siret,))
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(text("DELETE FROM entreprises WHERE siret = :siret"), {"siret": siret})
     logger.info("Entreprise %s supprimée", siret)
 
 
 def reset_entreprises() -> int:
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) AS n FROM entreprises")
-    count = cursor.fetchone()["n"]
-    cursor.execute("DELETE FROM entreprises")
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        count = conn.execute(text("SELECT COUNT(*) AS n FROM entreprises")).mappings().first()["n"]
+        conn.execute(text("DELETE FROM entreprises"))
     logger.warning("Table entreprises vidée (%d ligne(s))", count)
     return count
 
 
 def insert_entreprise_ignore(row: dict[str, Any]) -> bool:
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT OR IGNORE INTO entreprises (
-            siret, siren, denomination, adresse, commune,
-            effectif_code, effectif_libelle, naf_code, naf_libelle, date_creation,
-            est_siege, categorie_entreprise, categorie_juridique, nature,
-            score_pertinence, latitude, longitude
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            row["siret"],
-            row.get("siren"),
-            row["denomination"],
-            row.get("adresse"),
-            row.get("commune"),
-            row.get("effectif_code"),
-            row.get("effectif_libelle"),
-            row.get("naf_code"),
-            row.get("naf_libelle"),
-            row.get("date_creation"),
-            1 if row.get("est_siege") else 0,
-            row.get("categorie_entreprise"),
-            row.get("categorie_juridique"),
-            row.get("nature") or "entreprise",
-            row.get("score_pertinence") or 0,
-            row.get("latitude"),
-            row.get("longitude"),
-        ),
-    )
-    inserted = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
+    values = {
+        "siret": row["siret"],
+        "siren": row.get("siren"),
+        "denomination": row["denomination"],
+        "adresse": row.get("adresse"),
+        "commune": row.get("commune"),
+        "effectif_code": row.get("effectif_code"),
+        "effectif_libelle": row.get("effectif_libelle"),
+        "naf_code": row.get("naf_code"),
+        "naf_libelle": row.get("naf_libelle"),
+        "date_creation": row.get("date_creation"),
+        "est_siege": 1 if row.get("est_siege") else 0,
+        "categorie_entreprise": row.get("categorie_entreprise"),
+        "categorie_juridique": row.get("categorie_juridique"),
+        "nature": row.get("nature") or "entreprise",
+        "score_pertinence": row.get("score_pertinence") or 0,
+        "latitude": row.get("latitude"),
+        "longitude": row.get("longitude"),
+        "created_at": _now(),
+    }
+    with get_engine().begin() as conn:
+        inserted = _insert_ignore(conn, entreprises_table, values)
     return inserted
 
 
 def insert_entreprise(row: dict[str, Any]) -> None:
-    """Insère une entreprise. Lève sqlite3.IntegrityError si le SIRET existe déjà."""
-    conn = get_db()
-    cursor = conn.cursor()
+    """Insère une entreprise. Lève DuplicateSiretError si le SIRET existe déjà."""
+    values = {
+        "siret": row["siret"],
+        "siren": row.get("siren"),
+        "denomination": row["denomination"],
+        "adresse": row.get("adresse"),
+        "commune": row.get("commune"),
+        "effectif_code": row.get("effectif_code"),
+        "effectif_libelle": row.get("effectif_libelle"),
+        "naf_code": row.get("naf_code"),
+        "naf_libelle": row.get("naf_libelle"),
+        "date_creation": row.get("date_creation"),
+        "est_siege": 1 if row.get("est_siege") else 0,
+        "categorie_entreprise": row.get("categorie_entreprise"),
+        "categorie_juridique": row.get("categorie_juridique"),
+        "nature": row.get("nature") or "entreprise",
+        "score_pertinence": row.get("score_pertinence") or 0,
+        "latitude": row.get("latitude"),
+        "longitude": row.get("longitude"),
+        "site_web": row.get("site_web") or None,
+        "linkedin_company": row.get("linkedin_company") or None,
+        "notes": row.get("notes") or None,
+        "status": row.get("status") or "a_postuler",
+        "created_at": _now(),
+    }
     try:
-        cursor.execute(
-            """
-            INSERT INTO entreprises (
-                siret, siren, denomination, adresse, commune,
-                effectif_code, effectif_libelle, naf_code, naf_libelle, date_creation,
-                est_siege, categorie_entreprise, categorie_juridique, nature,
-                score_pertinence, latitude, longitude, site_web, linkedin_company, notes, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                row["siret"],
-                row.get("siren"),
-                row["denomination"],
-                row.get("adresse"),
-                row.get("commune"),
-                row.get("effectif_code"),
-                row.get("effectif_libelle"),
-                row.get("naf_code"),
-                row.get("naf_libelle"),
-                row.get("date_creation"),
-                1 if row.get("est_siege") else 0,
-                row.get("categorie_entreprise"),
-                row.get("categorie_juridique"),
-                row.get("nature") or "entreprise",
-                row.get("score_pertinence") or 0,
-                row.get("latitude"),
-                row.get("longitude"),
-                row.get("site_web") or None,
-                row.get("linkedin_company") or None,
-                row.get("notes") or None,
-                row.get("status") or "a_postuler",
-            ),
-        )
-        conn.commit()
-        logger.info("Entreprise ajoutée manuellement : %s (%s)", row["denomination"], row["siret"])
-    finally:
-        conn.close()
+        with get_engine().begin() as conn:
+            conn.execute(entreprises_table.insert().values(**values))
+    except IntegrityError as exc:
+        raise DuplicateSiretError(row["siret"]) from exc
+    logger.info("Entreprise ajoutée manuellement : %s (%s)", row["denomination"], row["siret"])
 
 
 def replace_entreprises_cleaned(
@@ -407,41 +298,41 @@ def replace_entreprises_cleaned(
     keep_sirets: set[str],
 ) -> dict[str, int]:
     """Supprime les SIRET non retenus et met à jour score / notes des gardés."""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT siret FROM entreprises")
-    all_sirets = {r["siret"] for r in cursor.fetchall()}
-    to_delete = all_sirets - keep_sirets
-    for siret in to_delete:
-        cursor.execute("DELETE FROM entreprises WHERE siret = ?", (siret,))
+    with get_engine().begin() as conn:
+        all_sirets = {
+            r["siret"] for r in conn.execute(text("SELECT siret FROM entreprises")).mappings().all()
+        }
+        to_delete = all_sirets - keep_sirets
+        for siret in to_delete:
+            conn.execute(text("DELETE FROM entreprises WHERE siret = :siret"), {"siret": siret})
 
-    updated = 0
-    for row in keep_rows:
-        cursor.execute(
-            """
-            UPDATE entreprises
-            SET score_pertinence = ?,
-                notes = COALESCE(?, notes),
-                est_siege = ?,
-                categorie_entreprise = COALESCE(?, categorie_entreprise),
-                categorie_juridique = COALESCE(?, categorie_juridique),
-                nature = COALESCE(?, nature)
-            WHERE siret = ?
-            """,
-            (
-                row.get("score_pertinence") or 0,
-                row.get("notes"),
-                1 if row.get("est_siege") else 0,
-                row.get("categorie_entreprise"),
-                row.get("categorie_juridique"),
-                row.get("nature"),
-                row["siret"],
-            ),
-        )
-        updated += cursor.rowcount
+        updated = 0
+        for row in keep_rows:
+            result = conn.execute(
+                text(
+                    """
+                    UPDATE entreprises
+                    SET score_pertinence = :score_pertinence,
+                        notes = COALESCE(:notes, notes),
+                        est_siege = :est_siege,
+                        categorie_entreprise = COALESCE(:categorie_entreprise, categorie_entreprise),
+                        categorie_juridique = COALESCE(:categorie_juridique, categorie_juridique),
+                        nature = COALESCE(:nature, nature)
+                    WHERE siret = :siret
+                    """
+                ),
+                {
+                    "score_pertinence": row.get("score_pertinence") or 0,
+                    "notes": row.get("notes"),
+                    "est_siege": 1 if row.get("est_siege") else 0,
+                    "categorie_entreprise": row.get("categorie_entreprise"),
+                    "categorie_juridique": row.get("categorie_juridique"),
+                    "nature": row.get("nature"),
+                    "siret": row["siret"],
+                },
+            )
+            updated += result.rowcount
 
-    conn.commit()
-    conn.close()
     logger.info("Clean DB — deleted=%d updated=%d", len(to_delete), updated)
     return {"deleted": len(to_delete), "updated": updated}
 
@@ -452,95 +343,99 @@ def mark_serpapi_result(
     linkedin_company: str | None,
     scanned: bool = True,
 ) -> None:
-    conn = get_db()
-    conn.execute(
-        """
-        UPDATE entreprises
-        SET site_web = COALESCE(NULLIF(?, ''), site_web),
-            linkedin_company = COALESCE(NULLIF(?, ''), linkedin_company),
-            serpapi_scanned = ?
-        WHERE siret = ?
-        """,
-        (site_web or "", linkedin_company or "", 1 if scanned else 0, siret),
-    )
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE entreprises
+                SET site_web = COALESCE(NULLIF(:site_web, ''), site_web),
+                    linkedin_company = COALESCE(NULLIF(:linkedin_company, ''), linkedin_company),
+                    serpapi_scanned = :scanned
+                WHERE siret = :siret
+                """
+            ),
+            {
+                "site_web": site_web or "",
+                "linkedin_company": linkedin_company or "",
+                "scanned": 1 if scanned else 0,
+                "siret": siret,
+            },
+        )
 
 
 def mark_serpapi_scanned_only(siret: str) -> None:
-    conn = get_db()
-    conn.execute("UPDATE entreprises SET serpapi_scanned = 1 WHERE siret = ?", (siret,))
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE entreprises SET serpapi_scanned = 1 WHERE siret = :siret"), {"siret": siret}
+        )
 
 
-def entreprises_to_serpapi(sirets: list[str] | None = None) -> list[sqlite3.Row]:
-    conn = get_db()
-    if sirets:
-        placeholders = ",".join("?" * len(sirets))
-        rows = conn.execute(
-            f"SELECT siret, denomination, commune FROM entreprises WHERE siret IN ({placeholders})",
-            sirets,
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT siret, denomination, commune FROM entreprises
-            WHERE serpapi_scanned = 0
-            ORDER BY COALESCE(score_pertinence, 0) DESC, denomination COLLATE NOCASE
-            """
-        ).fetchall()
-    conn.close()
+def entreprises_to_serpapi(sirets: list[str] | None = None):
+    with get_engine().connect() as conn:
+        if sirets:
+            placeholders = ", ".join(f":s{i}" for i in range(len(sirets)))
+            params = {f"s{i}": v for i, v in enumerate(sirets)}
+            rows = conn.execute(
+                text(f"SELECT siret, denomination, commune FROM entreprises WHERE siret IN ({placeholders})"),
+                params,
+            ).mappings().all()
+        else:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT siret, denomination, commune FROM entreprises
+                    WHERE serpapi_scanned = 0
+                    ORDER BY COALESCE(score_pertinence, 0) DESC, LOWER(denomination)
+                    """
+                )
+            ).mappings().all()
     return list(rows)
 
 
-def entreprises_sans_coords(limit: int = 40) -> list[sqlite3.Row]:
-    conn = get_db()
-    rows = conn.execute(
-        """
-        SELECT siret, adresse, commune FROM entreprises
-        WHERE (latitude IS NULL OR longitude IS NULL)
-          AND COALESCE(geocode_failed, 0) = 0
-        ORDER BY COALESCE(score_pertinence, 0) DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()
-    conn.close()
+def entreprises_sans_coords(limit: int = 40):
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT siret, adresse, commune FROM entreprises
+                WHERE (latitude IS NULL OR longitude IS NULL)
+                  AND COALESCE(geocode_failed, 0) = 0
+                ORDER BY COALESCE(score_pertinence, 0) DESC
+                LIMIT :limit
+                """
+            ),
+            {"limit": limit},
+        ).mappings().all()
     return list(rows)
 
 
 def count_entreprises_sans_coords() -> int:
-    conn = get_db()
-    n = conn.execute(
-        """
-        SELECT COUNT(*) AS n FROM entreprises
-        WHERE (latitude IS NULL OR longitude IS NULL)
-          AND COALESCE(geocode_failed, 0) = 0
-        """
-    ).fetchone()["n"]
-    conn.close()
+    with get_engine().connect() as conn:
+        n = conn.execute(
+            text(
+                """
+                SELECT COUNT(*) AS n FROM entreprises
+                WHERE (latitude IS NULL OR longitude IS NULL)
+                  AND COALESCE(geocode_failed, 0) = 0
+                """
+            )
+        ).mappings().first()["n"]
     return n
 
 
 def mark_geocode_failed(siret: str) -> None:
-    conn = get_db()
-    conn.execute(
-        "UPDATE entreprises SET geocode_failed = 1 WHERE siret = ?",
-        (siret,),
-    )
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE entreprises SET geocode_failed = 1 WHERE siret = :siret"), {"siret": siret}
+        )
 
 
 def update_entreprise_coords(siret: str, latitude: float, longitude: float) -> None:
-    conn = get_db()
-    conn.execute(
-        "UPDATE entreprises SET latitude = ?, longitude = ? WHERE siret = ?",
-        (latitude, longitude, siret),
-    )
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE entreprises SET latitude = :lat, longitude = :lon WHERE siret = :siret"),
+            {"lat": latitude, "lon": longitude, "siret": siret},
+        )
 
 
 def update_entreprise_travel(
@@ -551,108 +446,109 @@ def update_entreprise_travel(
     distance_km: float,
     without_tolls: bool = True,
 ) -> None:
-    conn = get_db()
-    conn.execute(
-        """
-        UPDATE entreprises
-        SET travel_origin = ?,
-            travel_duration_min = ?,
-            travel_distance_km = ?,
-            travel_without_tolls = ?,
-            travel_updated_at = CURRENT_TIMESTAMP
-        WHERE siret = ?
-        """,
-        (origin, duration_min, distance_km, 1 if without_tolls else 0, siret),
-    )
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE entreprises
+                SET travel_origin = :origin,
+                    travel_duration_min = :duration_min,
+                    travel_distance_km = :distance_km,
+                    travel_without_tolls = :without_tolls,
+                    travel_updated_at = :updated_at
+                WHERE siret = :siret
+                """
+            ),
+            {
+                "origin": origin,
+                "duration_min": duration_min,
+                "distance_km": distance_km,
+                "without_tolls": 1 if without_tolls else 0,
+                "updated_at": _now(),
+                "siret": siret,
+            },
+        )
 
 
 def entreprises_to_dirigeants(
     sirets: list[str] | None = None,
     force: bool = False,
-) -> list[sqlite3.Row]:
-    conn = get_db()
-    if sirets:
-        placeholders = ",".join("?" * len(sirets))
-        rows = conn.execute(
-            f"""
-            SELECT siret, siren, denomination, contact_prenom, contact_nom, dirigeants_scanned
-            FROM entreprises WHERE siret IN ({placeholders})
-            """,
-            sirets,
-        ).fetchall()
-    elif force:
-        rows = conn.execute(
-            """
-            SELECT siret, siren, denomination, contact_prenom, contact_nom, dirigeants_scanned
-            FROM entreprises
-            ORDER BY COALESCE(score_pertinence, 0) DESC, denomination COLLATE NOCASE
-            """
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT siret, siren, denomination, contact_prenom, contact_nom, dirigeants_scanned
-            FROM entreprises
-            WHERE COALESCE(dirigeants_scanned, 0) = 0
-              AND (contact_prenom IS NULL OR TRIM(contact_prenom) = '')
-              AND (contact_nom IS NULL OR TRIM(contact_nom) = '')
-            ORDER BY COALESCE(score_pertinence, 0) DESC, denomination COLLATE NOCASE
-            """
-        ).fetchall()
-    conn.close()
+):
+    cols = "siret, siren, denomination, contact_prenom, contact_nom, dirigeants_scanned"
+    with get_engine().connect() as conn:
+        if sirets:
+            placeholders = ", ".join(f":s{i}" for i in range(len(sirets)))
+            params = {f"s{i}": v for i, v in enumerate(sirets)}
+            rows = conn.execute(
+                text(f"SELECT {cols} FROM entreprises WHERE siret IN ({placeholders})"), params
+            ).mappings().all()
+        elif force:
+            rows = conn.execute(
+                text(f"SELECT {cols} FROM entreprises ORDER BY COALESCE(score_pertinence, 0) DESC, LOWER(denomination)")
+            ).mappings().all()
+        else:
+            rows = conn.execute(
+                text(
+                    f"""
+                    SELECT {cols} FROM entreprises
+                    WHERE COALESCE(dirigeants_scanned, 0) = 0
+                      AND (contact_prenom IS NULL OR TRIM(contact_prenom) = '')
+                      AND (contact_nom IS NULL OR TRIM(contact_nom) = '')
+                    ORDER BY COALESCE(score_pertinence, 0) DESC, LOWER(denomination)
+                    """
+                )
+            ).mappings().all()
     return list(rows)
 
 
 def apply_dirigeant(siret: str, fields: dict[str, Any]) -> None:
-    conn = get_db()
-    conn.execute(
-        """
-        UPDATE entreprises
-        SET contact_prenom = ?,
-            contact_nom = ?,
-            contact_poste = COALESCE(NULLIF(?, ''), contact_poste),
-            contact_source = COALESCE(NULLIF(?, ''), 'dirigeant'),
-            dirigeants_scanned = 1
-        WHERE siret = ?
-        """,
-        (
-            fields.get("contact_prenom") or "",
-            fields.get("contact_nom") or "",
-            fields.get("contact_poste") or "",
-            fields.get("contact_source") or "dirigeant",
-            siret,
-        ),
-    )
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE entreprises
+                SET contact_prenom = :prenom,
+                    contact_nom = :nom,
+                    contact_poste = COALESCE(NULLIF(:poste, ''), contact_poste),
+                    contact_source = COALESCE(NULLIF(:source, ''), 'dirigeant'),
+                    dirigeants_scanned = 1
+                WHERE siret = :siret
+                """
+            ),
+            {
+                "prenom": fields.get("contact_prenom") or "",
+                "nom": fields.get("contact_nom") or "",
+                "poste": fields.get("contact_poste") or "",
+                "source": fields.get("contact_source") or "dirigeant",
+                "siret": siret,
+            },
+        )
 
 
 def apply_contact(siret: str, fields: dict[str, Any]) -> None:
-    """Met à jour le contact (RH/tech/dirigeant) sans toucher dirigeants_scanned sauf demandé."""
-    conn = get_db()
-    conn.execute(
-        """
-        UPDATE entreprises
-        SET contact_prenom = COALESCE(NULLIF(?, ''), contact_prenom),
-            contact_nom = COALESCE(NULLIF(?, ''), contact_nom),
-            contact_poste = COALESCE(NULLIF(?, ''), contact_poste),
-            contact_linkedin = COALESCE(NULLIF(?, ''), contact_linkedin),
-            contact_source = COALESCE(NULLIF(?, ''), contact_source)
-        WHERE siret = ?
-        """,
-        (
-            fields.get("contact_prenom") or "",
-            fields.get("contact_nom") or "",
-            fields.get("contact_poste") or "",
-            fields.get("contact_linkedin") or "",
-            fields.get("contact_source") or "",
-            siret,
-        ),
-    )
-    conn.commit()
-    conn.close()
+    """Met à jour le contact (RH/tech/dirigeant) sans toucher dirigeants_scanned."""
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE entreprises
+                SET contact_prenom = COALESCE(NULLIF(:prenom, ''), contact_prenom),
+                    contact_nom = COALESCE(NULLIF(:nom, ''), contact_nom),
+                    contact_poste = COALESCE(NULLIF(:poste, ''), contact_poste),
+                    contact_linkedin = COALESCE(NULLIF(:linkedin, ''), contact_linkedin),
+                    contact_source = COALESCE(NULLIF(:source, ''), contact_source)
+                WHERE siret = :siret
+                """
+            ),
+            {
+                "prenom": fields.get("contact_prenom") or "",
+                "nom": fields.get("contact_nom") or "",
+                "poste": fields.get("contact_poste") or "",
+                "linkedin": fields.get("contact_linkedin") or "",
+                "source": fields.get("contact_source") or "",
+                "siret": siret,
+            },
+        )
 
 
 def apply_email_quality(
@@ -663,30 +559,27 @@ def apply_email_quality(
     quality: str,
     note: str = "",
 ) -> None:
-    conn = get_db()
-    conn.execute(
-        """
-        UPDATE entreprises
-        SET contact_email = COALESCE(NULLIF(?, ''), contact_email),
-            email_hunter_score = ?,
-            email_quality = ?,
-            email_quality_note = ?
-        WHERE siret = ?
-        """,
-        (email, hunter_score, quality, note, siret),
-    )
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE entreprises
+                SET contact_email = COALESCE(NULLIF(:email, ''), contact_email),
+                    email_hunter_score = :hunter_score,
+                    email_quality = :quality,
+                    email_quality_note = :note
+                WHERE siret = :siret
+                """
+            ),
+            {"email": email, "hunter_score": hunter_score, "quality": quality, "note": note, "siret": siret},
+        )
 
 
 def mark_dirigeants_scanned(siret: str) -> None:
-    conn = get_db()
-    conn.execute(
-        "UPDATE entreprises SET dirigeants_scanned = 1 WHERE siret = ?",
-        (siret,),
-    )
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("UPDATE entreprises SET dirigeants_scanned = 1 WHERE siret = :siret"), {"siret": siret}
+        )
 
 
 def mark_email_sent(
@@ -697,22 +590,29 @@ def mark_email_sent(
     subject: str | None = None,
     body: str | None = None,
 ) -> None:
-    conn = get_db()
-    conn.execute(
-        """
-        UPDATE entreprises
-        SET status = 'postule',
-            contact_email = COALESCE(NULLIF(?, ''), contact_email),
-            email_message_id = COALESCE(NULLIF(?, ''), email_message_id),
-            email_subject = COALESCE(NULLIF(?, ''), email_subject),
-            email_body = COALESCE(NULLIF(?, ''), email_body),
-            email_sent_at = CURRENT_TIMESTAMP
-        WHERE siret = ?
-        """,
-        (email, message_id or "", subject or "", body or "", siret),
-    )
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE entreprises
+                SET status = 'postule',
+                    contact_email = COALESCE(NULLIF(:email, ''), contact_email),
+                    email_message_id = COALESCE(NULLIF(:message_id, ''), email_message_id),
+                    email_subject = COALESCE(NULLIF(:subject, ''), email_subject),
+                    email_body = COALESCE(NULLIF(:body, ''), email_body),
+                    email_sent_at = :sent_at
+                WHERE siret = :siret
+                """
+            ),
+            {
+                "email": email,
+                "message_id": message_id or "",
+                "subject": subject or "",
+                "body": body or "",
+                "sent_at": _now(),
+                "siret": siret,
+            },
+        )
     logger.info("Statut 'postule' pour %s (email=%s, msg-id=%s)", siret, email, message_id)
 
 
@@ -722,68 +622,72 @@ def mark_relance_sent(
     message_id: str | None = None,
     body: str | None = None,
 ) -> None:
-    conn = get_db()
-    conn.execute(
-        """
-        UPDATE entreprises
-        SET status = 'relance',
-            relance_count = COALESCE(relance_count, 0) + 1,
-            last_relance_at = CURRENT_TIMESTAMP,
-            email_message_id = COALESCE(NULLIF(?, ''), email_message_id),
-            email_body = COALESCE(NULLIF(?, ''), email_body)
-        WHERE siret = ?
-        """,
-        (message_id or "", body or "", siret),
-    )
-    conn.commit()
-    conn.close()
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE entreprises
+                SET status = 'relance',
+                    relance_count = COALESCE(relance_count, 0) + 1,
+                    last_relance_at = :relance_at,
+                    email_message_id = COALESCE(NULLIF(:message_id, ''), email_message_id),
+                    email_body = COALESCE(NULLIF(:body, ''), email_body)
+                WHERE siret = :siret
+                """
+            ),
+            {
+                "relance_at": _now(),
+                "message_id": message_id or "",
+                "body": body or "",
+                "siret": siret,
+            },
+        )
     logger.info("Relance enregistrée pour %s (msg-id=%s)", siret, message_id)
 
 
 def list_candidatures_en_attente() -> list[dict[str, Any]]:
-    """Entreprises en attente de réponse (postulé / relancé), avec infos mail."""
-    conn = get_db()
-    rows = conn.execute(
-        """
-        SELECT siret, denomination, status, contact_email,
-               email_message_id, email_subject, email_sent_at,
-               reply_message_id, reply_class, relance_count, last_relance_at
-        FROM entreprises
-        WHERE status IN ('postule', 'relance')
-          AND email_sent_at IS NOT NULL
-        ORDER BY email_sent_at DESC
-        """
-    ).fetchall()
-    conn.close()
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT siret, denomination, status, contact_email,
+                       email_message_id, email_subject, email_sent_at,
+                       reply_message_id, reply_class, relance_count, last_relance_at
+                FROM entreprises
+                WHERE status IN ('postule', 'relance')
+                  AND email_sent_at IS NOT NULL
+                ORDER BY email_sent_at DESC
+                """
+            )
+        ).mappings().all()
     return [dict(r) for r in rows]
 
 
 def list_entretiens_a_suivre() -> list[dict[str, Any]]:
-    """Entreprises en entretien / offre avec date ou rappel renseigné."""
-    conn = get_db()
-    rows = conn.execute(
-        """
-        SELECT siret, denomination, status, contact_prenom, contact_nom,
-               contact_email, entretien_date, entretien_next_step, entretien_rappel_at,
-               notes
-        FROM entreprises
-        WHERE status IN ('entretien', 'offre')
-        ORDER BY
-          CASE WHEN entretien_rappel_at IS NULL OR TRIM(entretien_rappel_at) = '' THEN 1 ELSE 0 END,
-          entretien_rappel_at ASC,
-          CASE WHEN entretien_date IS NULL OR TRIM(entretien_date) = '' THEN 1 ELSE 0 END,
-          entretien_date ASC,
-          denomination COLLATE NOCASE
-        """
-    ).fetchall()
-    conn.close()
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT siret, denomination, status, contact_prenom, contact_nom,
+                       contact_email, entretien_date, entretien_next_step, entretien_rappel_at,
+                       notes
+                FROM entreprises
+                WHERE status IN ('entretien', 'offre')
+                ORDER BY
+                  CASE WHEN entretien_rappel_at IS NULL OR TRIM(entretien_rappel_at) = '' THEN 1 ELSE 0 END,
+                  entretien_rappel_at ASC,
+                  CASE WHEN entretien_date IS NULL OR TRIM(entretien_date) = '' THEN 1 ELSE 0 END,
+                  entretien_date ASC,
+                  LOWER(denomination)
+                """
+            )
+        ).mappings().all()
     return [dict(r) for r in rows]
 
 
 def list_processed_reply_ids() -> set[str]:
-    conn = get_db()
-    rows = conn.execute("SELECT message_id FROM processed_replies").fetchall()
-    conn.close()
+    with get_engine().connect() as conn:
+        rows = conn.execute(text("SELECT message_id FROM processed_replies")).mappings().all()
     return {(r["message_id"] or "").lower() for r in rows if r["message_id"]}
 
 
@@ -807,10 +711,7 @@ def mark_reply_classified(
         return
 
     apply_status = classification in ("offre", "entretien", "refus")
-    note_line = (
-        f"[Réponse auto {classification}] "
-        f"de {from_email or '?'} — {(subject or '')[:80]}"
-    )
+    note_line = f"[Réponse auto {classification}] de {from_email or '?'} — {(subject or '')[:80]}"
     if reason:
         note_line += f"\n→ {reason.strip()}"
     if excerpt:
@@ -819,49 +720,118 @@ def mark_reply_classified(
     existing_notes = (ent["notes"] or "").strip()
     notes = f"{existing_notes}\n{note_line}".strip() if existing_notes else note_line
 
-    conn = get_db()
-    if apply_status:
-        conn.execute(
-            """
-            UPDATE entreprises
-            SET status = ?,
-                reply_message_id = ?,
-                reply_class = ?,
-                reply_classified_at = CURRENT_TIMESTAMP,
-                reply_from = ?,
-                reply_subject = ?,
-                notes = ?
-            WHERE siret = ?
-            """,
-            (classification, message_id, classification, from_email, subject, notes, siret),
-        )
-    else:
-        conn.execute(
-            """
-            UPDATE entreprises
-            SET reply_message_id = ?,
-                reply_class = ?,
-                reply_classified_at = CURRENT_TIMESTAMP,
-                reply_from = ?,
-                reply_subject = ?,
-                notes = ?
-            WHERE siret = ?
-            """,
-            (message_id, classification, from_email, subject, notes, siret),
+    with get_engine().begin() as conn:
+        if apply_status:
+            conn.execute(
+                text(
+                    """
+                    UPDATE entreprises
+                    SET status = :classification,
+                        reply_message_id = :message_id,
+                        reply_class = :classification,
+                        reply_classified_at = :classified_at,
+                        reply_from = :from_email,
+                        reply_subject = :subject,
+                        notes = :notes
+                    WHERE siret = :siret
+                    """
+                ),
+                {
+                    "classification": classification,
+                    "message_id": message_id,
+                    "classified_at": _now(),
+                    "from_email": from_email,
+                    "subject": subject,
+                    "notes": notes,
+                    "siret": siret,
+                },
+            )
+        else:
+            conn.execute(
+                text(
+                    """
+                    UPDATE entreprises
+                    SET reply_message_id = :message_id,
+                        reply_class = :classification,
+                        reply_classified_at = :classified_at,
+                        reply_from = :from_email,
+                        reply_subject = :subject,
+                        notes = :notes
+                    WHERE siret = :siret
+                    """
+                ),
+                {
+                    "message_id": message_id,
+                    "classification": classification,
+                    "classified_at": _now(),
+                    "from_email": from_email,
+                    "subject": subject,
+                    "notes": notes,
+                    "siret": siret,
+                },
+            )
+
+        _insert_replace(
+            conn,
+            processed_replies_table,
+            {"message_id": message_id, "siret": siret, "classification": classification, "processed_at": _now()},
+            "message_id",
         )
 
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO processed_replies (message_id, siret, classification)
-        VALUES (?, ?, ?)
-        """,
-        (message_id, siret, classification),
-    )
-    conn.commit()
-    conn.close()
     logger.info(
-        "Réponse classée pour %s → %s (status_updated=%s)",
-        siret,
-        classification,
-        apply_status,
+        "Réponse classée pour %s → %s (status_updated=%s)", siret, classification, apply_status,
     )
+
+
+def get_config_value(key: str, default: str = "") -> str:
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            select(config_table.c.value).where(config_table.c.key == key)
+        ).mappings().first()
+    if row and row["value"]:
+        return row["value"]
+    return default
+
+
+def set_config_values(data: dict[str, Any]) -> None:
+    with get_engine().begin() as conn:
+        for k, v in data.items():
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v, ensure_ascii=False)
+            _insert_replace(conn, config_table, {"key": k, "value": str(v) if v is not None else ""}, "key")
+    logger.info("Config mise à jour (%d clé(s)) : %s", len(data), ", ".join(data.keys()))
+
+
+def get_all_config() -> dict[str, str]:
+    with get_engine().connect() as conn:
+        rows = conn.execute(select(config_table.c.key, config_table.c.value)).mappings().all()
+    return {row["key"]: row["value"] for row in rows}
+
+
+def env_or_config(key: str, *aliases: str) -> str:
+    """Lit d'abord .env, puis la config DB (avec alias éventuels)."""
+    import os
+
+    for name in (key, *aliases):
+        val = os.getenv(name)
+        if val:
+            return val.strip()
+    for name in (key, *aliases):
+        val = get_config_value(name)
+        if val:
+            return val.strip()
+    return ""
+
+
+def load_nafs(cfg: dict[str, str] | None = None) -> dict[str, str]:
+    cfg = cfg if cfg is not None else get_all_config()
+    nafs_raw = cfg.get("nafs")
+    if not nafs_raw:
+        return dict(DEFAULT_NAF_CODES)
+    try:
+        parsed = json.loads(nafs_raw)
+        if isinstance(parsed, dict) and parsed:
+            return parsed
+    except json.JSONDecodeError:
+        logger.warning("Config nafs invalide, fallback sur les NAF par défaut")
+    return dict(DEFAULT_NAF_CODES)

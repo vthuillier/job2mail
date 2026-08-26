@@ -55,6 +55,41 @@ Toutes les clés ci-dessous peuvent être définies dans `.env` **ou** directeme
 | `APP_PASSWORD` | Protège l'accès à l'interface web | À choisir vous-même |
 | `SECRET_KEY` | Clé de session Flask | `python -c "import secrets; print(secrets.token_hex(32))"` |
 
+## Base de données
+
+Par défaut, Job2Mail utilise SQLite (`jobtomail.db`), sans configuration nécessaire.
+
+Pour utiliser PostgreSQL ou MariaDB à la place, définissez ces variables
+d'environnement (dans `.env` ou l'environnement du conteneur) :
+
+```
+DB_BACKEND=postgres   # ou mariadb
+DB_HOST=localhost
+DB_PORT=5432          # 3306 pour mariadb
+DB_USER=jobtomail
+DB_PASSWORD=jobtomail
+DB_NAME=jobtomail
+```
+
+Sans `DB_BACKEND` défini, la page Paramètres → « Base de données » permet de
+choisir le backend et de tester la connexion depuis l'interface — la config
+est alors stockée dans `db_config.json` à la racine du projet (jamais dans
+`.env`, ni dans la base elle-même).
+
+Changer de backend démarre avec des tables vides — pas de migration
+automatique des données existantes.
+
+### Tester en local avec Docker Compose
+
+```bash
+docker compose --profile postgres up      # démarre aussi un conteneur postgres:16-alpine
+docker compose --profile mariadb up       # démarre aussi un conteneur mariadb:11
+```
+
+Puis dans `.env` : `DB_BACKEND=postgres`, `DB_HOST=postgres`, `DB_PORT=5432`,
+`DB_USER=jobtomail`, `DB_PASSWORD=jobtomail`, `DB_NAME=jobtomail` (adapter
+pour mariadb : `DB_HOST=mariadb`, `DB_PORT=3306`).
+
 ## Architecture
 
 - `app.py` — point d'entrée (`python app.py`).
