@@ -942,6 +942,45 @@ function activatePage(page) {
     await loadEntreprises();
   });
 
+  document.getElementById("btn-smtp").addEventListener("click", async () => {
+    const btn = document.getElementById("btn-smtp");
+    const domain = document.getElementById("d-site").value.trim();
+    const prenom = document.getElementById("d-prenom").value.trim();
+    const nom = document.getElementById("d-nom").value.trim();
+    const siret = document.getElementById("d-siret").value;
+    console.log("[btn-smtp] click", { domain, prenom, nom, siret });
+    if (!domain || !prenom || !nom) {
+      console.warn("[btn-smtp] champs manquants, requête annulée");
+      toast("Site, prénom et nom requis", "error");
+      return;
+    }
+    toast("Recherche SMTP…");
+    btn.disabled = true;
+    try {
+      const response = await fetch("/api/manual/find-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domain, prenom, nom, siret }),
+      });
+      console.log("[btn-smtp] réponse HTTP", response.status);
+      const res = await response.json();
+      console.log("[btn-smtp] payload", res);
+      if (res.error) return toast(res.error, "error");
+      if (res.data && res.data.email) {
+        document.getElementById("d-email").value = res.data.email;
+        if (res.quality) renderEmailQuality(res.quality.quality, res.quality.note);
+        toast(`Email trouvé : ${res.data.email} (score ${res.data.score})`);
+      } else {
+        toast("Aucun email trouvé", "error");
+      }
+    } catch (err) {
+      console.error("[btn-smtp] échec de la requête", err);
+      toast("Erreur réseau lors de la recherche SMTP", "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   document.getElementById("btn-hunter").addEventListener("click", async () => {
     const domain = document.getElementById("d-site").value.trim();
     const prenom = document.getElementById("d-prenom").value.trim();
