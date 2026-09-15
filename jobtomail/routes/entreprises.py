@@ -6,14 +6,16 @@ import logging
 import re
 import time
 import uuid
+from datetime import date
+from math import ceil
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
 from jobtomail import db
 from jobtomail.constants import TRANCHE_EFFECTIFS
 from jobtomail.services.geo import geocode_adresse, get_route_info, normalize_location_label
-from jobtomail.services.linkedin import build_linkedin_people_url
-from jobtomail.services.relances import relance_status
+from jobtomail.services.pdf_export import build_entreprise_pdf, build_entreprises_pdf
+from jobtomail.services.relances import list_relances_dues, relance_status
 
 logger = logging.getLogger(__name__)
 
@@ -55,25 +57,101 @@ def _make_manual_siret() -> str:
     return "M" + uuid.uuid4().hex[:13].upper()
 
 
+def _pdf_slug(name: str | None) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", (name or "entreprise").strip()).strip("-").lower()
+    return slug[:60] or "entreprise"
+
+
 def _current_travel_origin(payload: dict | None = None) -> str:
     payload = payload or {}
     return (payload.get("origin") or db.get_config_value("point_ref", "La Crau") or "La Crau").strip()
 
 
+def _to_float(raw: str | None) -> float | None:
+    if raw in (None, ""):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _parse_filters_from_query() -> dict:
+    args = request.args
+    return {
+        "status": args.get("status") or "",
+        "search": args.get("search") or "",
+        "naf": args.getlist("naf"),
+        "effectif": args.getlist("effectif"),
+        "commune": args.get("commune") or "",
+        "categorie": args.get("categorie") or "",
+        "nature": args.get("nature") or "",
+        "score_min": _to_float(args.get("score_min")),
+        "travel_max_min": _to_float(args.get("travel_max_min")),
+        "siege_only": args.get("siege_only") == "1",
+        "has_contact": args.get("has_contact") == "1",
+        "has_email": args.get("has_email") == "1",
+        "serpapi_scanned": args.get("serpapi_scanned") == "1",
+    }
+
+
 @bp.route("/api/entreprises", methods=["GET"])
 def get_entreprises():
-    rows = db.list_entreprises()
-    logger.info("GET /api/entreprises — %d résultat(s)", len(rows))
+    """Liste paginée + filtrée (recherche/filtres portés côté SQL — dataset trop gros pour tout charger)."""
+    filters = _parse_filters_from_query()
+    try:
+        page = max(1, int(request.args.get("page") or 1))
+    except ValueError:
+        page = 1
+    try:
+        per_page = int(request.args.get("per_page") or 100)
+    except ValueError:
+        per_page = 100
+    per_page = max(1, min(per_page, 500))
+
+    origin = _current_travel_origin() if filters["travel_max_min"] is not None else None
+    rows, total = db.list_entreprises_page(filters, origin, page, per_page)
+
     entreprises = []
     for r in rows:
         item = dict(r)
-        item["linkedin_people_url"] = build_linkedin_people_url(
-            item.get("denomination") or "",
-            item.get("commune") or "",
-        )
         item["relance_info"] = relance_status(item)
         entreprises.append(item)
-    return jsonify({"entreprises": entreprises})
+
+    pages = ceil(total / per_page) if total else 1
+    logger.info(
+        "GET /api/entreprises — page %d/%d, %d résultat(s) sur %d filtré(s)",
+        page,
+        pages,
+        len(entreprises),
+        total,
+    )
+    return jsonify(
+        {"entreprises": entreprises, "total": total, "page": page, "per_page": per_page, "pages": pages}
+    )
+
+
+@bp.route("/api/entreprises/stats", methods=["GET"])
+def get_entreprises_stats():
+    """Compteurs globaux (cartes stats + badges chips) — indépendants des filtres actifs."""
+    counts = db.entreprises_status_counts()
+    dues = len(list_relances_dues())
+    return jsonify({"counts": counts, "relances_dues": dues})
+
+
+@bp.route("/api/entreprises/lite", methods=["GET"])
+def get_entreprises_lite():
+    """Liste allégée non paginée (carte + calcul candidats trajet) — respecte les mêmes filtres."""
+    filters = _parse_filters_from_query()
+    origin = _current_travel_origin()
+    rows = db.list_entreprises_lite(filters, origin)
+    return jsonify({"entreprises": [dict(r) for r in rows]})
+
+
+@bp.route("/api/entreprises/naf-codes-used", methods=["GET"])
+def get_naf_codes_used():
+    """Codes NAF distincts en base — alimente la checklist du filtre NAF."""
+    return jsonify({"codes": db.naf_codes_used()})
 
 
 @bp.route("/api/entreprises", methods=["POST"])
@@ -148,10 +226,6 @@ def create_entreprise():
 
     created = db.get_entreprise(siret)
     item = dict(created) if created else row
-    item["linkedin_people_url"] = build_linkedin_people_url(
-        item.get("denomination") or "",
-        item.get("commune") or "",
-    )
     item["relance_info"] = relance_status(item)
     logger.info("POST /api/entreprises — %s (%s)", denomination, siret)
     return jsonify({"ok": True, "entreprise": item}), 201
@@ -278,8 +352,16 @@ def compute_travel_times():
     )
 
 
-@bp.route("/api/entreprises/<siret>", methods=["PUT", "DELETE"])
+@bp.route("/api/entreprises/<siret>", methods=["GET", "PUT", "DELETE"])
 def handle_entreprise(siret: str):
+    if request.method == "GET":
+        entreprise = db.get_entreprise(siret)
+        if not entreprise:
+            return jsonify({"error": "Entreprise introuvable"}), 404
+        item = dict(entreprise)
+        item["relance_info"] = relance_status(item)
+        return jsonify({"entreprise": item})
+
     if request.method == "DELETE":
         logger.info("DELETE entreprise %s", siret)
         db.delete_entreprise(siret)
@@ -300,3 +382,41 @@ def handle_entreprise(siret: str):
 
     db.update_entreprise(siret, fields)
     return jsonify({"ok": True})
+
+
+@bp.route("/api/entreprises/<siret>/export.pdf", methods=["GET"])
+def export_entreprise_pdf(siret: str):
+    """Fiche PDF A4 d'une entreprise."""
+    entreprise = db.get_entreprise(siret)
+    if not entreprise:
+        return jsonify({"error": "Entreprise introuvable"}), 404
+    pdf_bytes = build_entreprise_pdf(dict(entreprise))
+    filename = f"fiche-{_pdf_slug(entreprise.get('denomination'))}.pdf"
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@bp.route("/api/entreprises/export.pdf", methods=["POST"])
+def export_entreprises_pdf():
+    """Export PDF groupé (sommaire + une fiche par entreprise sélectionnée)."""
+    data = request.get_json(force=True) or {}
+    sirets = [str(s).strip() for s in (data.get("sirets") or []) if str(s).strip()]
+    if not sirets:
+        return jsonify({"error": "Aucune entreprise sélectionnée"}), 400
+
+    wanted = set(sirets)
+    rows = [dict(r) for r in db.list_entreprises() if r["siret"] in wanted]
+    if not rows:
+        return jsonify({"error": "Entreprises introuvables"}), 404
+
+    pdf_bytes = build_entreprises_pdf(rows)
+    filename = f"export-entreprises-{date.today().isoformat()}.pdf"
+    logger.info("Export PDF groupé — %d entreprise(s)", len(rows))
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

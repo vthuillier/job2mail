@@ -21,7 +21,9 @@ def temp_db(tmp_path, monkeypatch):
 @pytest.fixture
 def app(temp_db, monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "test-secret")
-    monkeypatch.delenv("APP_PASSWORD", raising=False)
+    # setenv (pas delenv) : load_dotenv() dans create_app() re-remplirait une clé absente
+    # depuis le .env local, ré-activant l'auth malgré l'isolation voulue par le test.
+    monkeypatch.setenv("APP_PASSWORD", "")
     from jobtomail import create_app
 
     flask_app = create_app()

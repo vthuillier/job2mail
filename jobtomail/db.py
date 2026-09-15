@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import and_, create_engine, func, inspect, or_, select, text
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
@@ -17,6 +17,7 @@ from jobtomail.db_config import resolve_db_config
 from jobtomail.schema import (
     config as config_table,
     entreprises as entreprises_table,
+    ix_entreprises_score_denom,
     metadata,
     processed_replies as processed_replies_table,
 )
@@ -118,6 +119,7 @@ def _migrate(engine: Engine) -> None:
                 ddl += f" DEFAULT {default}"
             logger.info("Migration : ajout colonne entreprises.%s", col.name)
             conn.exec_driver_sql(ddl)
+    ix_entreprises_score_denom.create(engine, checkfirst=True)
 
 
 def create_job_row(job_id: str, kind: str, params: dict[str, Any] | None = None) -> None:
@@ -204,6 +206,147 @@ def get_entreprise(siret: str):
             text("SELECT * FROM entreprises WHERE siret = :siret"), {"siret": siret}
         ).mappings().first()
     return row
+
+
+def _apply_entreprise_filters(stmt, f: dict[str, Any], travel_origin: str | None):
+    """Applique les filtres liste/carte/candidats-trajet (mêmes règles que l'UI)."""
+    t = entreprises_table
+
+    status = (f.get("status") or "").strip()
+    if status and status != "tous":
+        stmt = stmt.where(t.c.status == status)
+
+    search = (f.get("search") or "").strip().lower()
+    if search:
+        like = f"%{search}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(func.coalesce(t.c.denomination, "")).like(like),
+                func.lower(func.coalesce(t.c.commune, "")).like(like),
+                func.lower(func.coalesce(t.c.contact_nom, "")).like(like),
+                func.lower(func.coalesce(t.c.naf_code, "")).like(like),
+                func.lower(func.coalesce(t.c.naf_libelle, "")).like(like),
+            )
+        )
+
+    naf = [c for c in (f.get("naf") or []) if c]
+    if naf:
+        stmt = stmt.where(t.c.naf_code.in_(naf))
+
+    effectif = [c for c in (f.get("effectif") or []) if c]
+    if effectif:
+        stmt = stmt.where(func.coalesce(t.c.effectif_code, "NN").in_(effectif))
+
+    commune = (f.get("commune") or "").strip().lower()
+    if commune:
+        stmt = stmt.where(func.lower(func.coalesce(t.c.commune, "")).like(f"%{commune}%"))
+
+    categorie = f.get("categorie") or ""
+    if categorie == "_none":
+        stmt = stmt.where(or_(t.c.categorie_entreprise.is_(None), t.c.categorie_entreprise == ""))
+    elif categorie:
+        stmt = stmt.where(t.c.categorie_entreprise == categorie)
+
+    nature = f.get("nature") or ""
+    if nature:
+        stmt = stmt.where(func.coalesce(t.c.nature, "entreprise") == nature)
+
+    score_min = f.get("score_min")
+    if score_min is not None:
+        stmt = stmt.where(func.coalesce(t.c.score_pertinence, 0) >= score_min)
+
+    travel_max_min = f.get("travel_max_min")
+    if travel_max_min is not None and travel_origin:
+        stmt = stmt.where(
+            and_(
+                func.lower(func.trim(func.coalesce(t.c.travel_origin, ""))) == travel_origin.strip().lower(),
+                t.c.travel_without_tolls == 1,
+                t.c.travel_duration_min.isnot(None),
+                t.c.travel_duration_min <= travel_max_min,
+            )
+        )
+
+    if f.get("siege_only"):
+        stmt = stmt.where(t.c.est_siege == 1)
+    if f.get("has_contact"):
+        stmt = stmt.where(
+            or_(
+                func.trim(func.coalesce(t.c.contact_prenom, "")) != "",
+                func.trim(func.coalesce(t.c.contact_nom, "")) != "",
+            )
+        )
+    if f.get("has_email"):
+        stmt = stmt.where(func.trim(func.coalesce(t.c.contact_email, "")) != "")
+    if f.get("serpapi_scanned"):
+        stmt = stmt.where(t.c.serpapi_scanned == 1)
+
+    return stmt
+
+
+def list_entreprises_page(
+    f: dict[str, Any], travel_origin: str | None, page: int, per_page: int
+) -> tuple[list[Any], int]:
+    """Page filtrée d'entreprises + nombre total de résultats correspondants."""
+    t = entreprises_table
+    order = (func.coalesce(t.c.score_pertinence, 0).desc(), func.lower(t.c.denomination).asc())
+    list_stmt = _apply_entreprise_filters(select(t), f, travel_origin).order_by(*order)
+    count_stmt = _apply_entreprise_filters(select(func.count()).select_from(t), f, travel_origin)
+    with get_engine().connect() as conn:
+        total = conn.execute(count_stmt).scalar_one()
+        rows = conn.execute(list_stmt.limit(per_page).offset((page - 1) * per_page)).mappings().all()
+    return list(rows), total
+
+
+def list_entreprises_lite(f: dict[str, Any], travel_origin: str | None) -> list[Any]:
+    """Liste allégée (carte + calcul candidats trajet) : tous les résultats, pas de pagination."""
+    t = entreprises_table
+    cols = [
+        t.c.siret,
+        t.c.denomination,
+        t.c.commune,
+        t.c.status,
+        t.c.score_pertinence,
+        t.c.latitude,
+        t.c.longitude,
+        t.c.travel_origin,
+        t.c.travel_without_tolls,
+        t.c.travel_duration_min,
+        t.c.travel_distance_km,
+    ]
+    order = (func.coalesce(t.c.score_pertinence, 0).desc(), func.lower(t.c.denomination).asc())
+    stmt = _apply_entreprise_filters(select(*cols), f, travel_origin).order_by(*order)
+    with get_engine().connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+    return list(rows)
+
+
+def entreprises_status_counts() -> dict[str, int]:
+    """Compteurs globaux par statut (indépendants des filtres actifs), pour cartes/chips."""
+    t = entreprises_table
+    with get_engine().connect() as conn:
+        total = conn.execute(select(func.count()).select_from(t)).scalar_one()
+        status_rows = conn.execute(
+            select(func.coalesce(t.c.status, "a_postuler").label("status"), func.count().label("n")).group_by(
+                func.coalesce(t.c.status, "a_postuler")
+            )
+        ).all()
+    counts = {"tous": total}
+    for status, n in status_rows:
+        counts[status] = n
+    return counts
+
+
+def naf_codes_used() -> list[dict[str, str]]:
+    """Codes NAF distincts réellement présents en base (checklist filtre)."""
+    t = entreprises_table
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            select(t.c.naf_code, func.max(t.c.naf_libelle))
+            .where(t.c.naf_code.isnot(None), t.c.naf_code != "")
+            .group_by(t.c.naf_code)
+            .order_by(t.c.naf_code)
+        ).all()
+    return [{"code": code, "libelle": libelle or code} for code, libelle in rows]
 
 
 def update_entreprise(siret: str, fields: dict[str, Any]) -> bool:

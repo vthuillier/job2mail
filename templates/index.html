@@ -8,7 +8,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/index.css') }}">
 </head>
 <body>
@@ -61,6 +60,7 @@
         <button class="btn btn-sky btn-sm" id="btn-serpapi">Scan SerpAPI</button>
         <button class="btn btn-secondary btn-sm" id="btn-dirigeants">Dirigeants</button>
         <button class="btn btn-secondary btn-sm" id="btn-contacts">Contacts RH/tech</button>
+        <button class="btn btn-sky btn-sm" id="btn-export-selected" type="button" style="display:none;">Exporter PDF (0)</button>
       </div>
     </div>
 
@@ -144,6 +144,7 @@
       <table>
         <thead>
           <tr>
+            <th><input type="checkbox" id="select-all-cb" title="Tout sélectionner"></th>
             <th>Score</th>
             <th>Entreprise</th>
             <th>Localisation</th>
@@ -156,6 +157,7 @@
         </thead>
         <tbody id="tbody"></tbody>
       </table>
+      <div class="pagination" id="pagination"></div>
     </div>
   </section>
 
@@ -165,6 +167,9 @@
         <h2>Recherche Sirene (INSEE)</h2>
         <p class="help">Choisis la zone, le rayon et les codes NAF. Le scan récupère les établissements actifs puis les stocke en SQLite.</p>
 
+        <div class="form-group">
+          <label><input type="checkbox" id="scan-national"> Scanner toute la France (ignore commune/rayon/départements ci-dessous)</label>
+        </div>
         <div class="form-group">
           <label class="form-label">Commune de référence</label>
           <input id="scan-point" class="form-control" value="La Crau">
@@ -182,6 +187,9 @@
 
         <div class="form-group">
           <label class="form-label">Codes NAF</label>
+          <p class="help">Tu connais pas les codes NAF ? Tape ton métier/secteur ci-dessous (ex: "chimie", "boulanger", "photographe").</p>
+          <input id="naf-search" class="form-control" placeholder="Rechercher un métier ou secteur…">
+          <div class="naf-box" id="naf-search-results"></div>
           <div class="naf-box" id="naf-list"></div>
           <div class="naf-add">
             <input id="naf-code" class="form-control" placeholder="62.01Z">
@@ -337,6 +345,9 @@
         </div>
         <div class="form-group">
           <label class="form-label">Codes NAF</label>
+          <p class="help">Tu connais pas les codes NAF ? Tape ton métier/secteur ci-dessous (ex: "chimie", "boulanger", "photographe").</p>
+          <input id="cfg-naf-search" class="form-control" placeholder="Rechercher un métier ou secteur…">
+          <div class="naf-box" id="cfg-naf-search-results"></div>
           <div class="naf-box" id="cfg-naf-list"></div>
           <div class="naf-add">
             <input id="cfg-naf-code" class="form-control" placeholder="62.01Z">
@@ -627,7 +638,6 @@
 
 <div class="toasts" id="toasts"></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script type="module" src="{{ url_for('static', filename='js/index.js') }}"></script>
 </body>
 </html>

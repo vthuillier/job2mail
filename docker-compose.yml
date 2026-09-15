@@ -2,7 +2,7 @@ services:
   web:
     build: .
     ports:
-      - "127.0.0.1:5002:5001"
+      - "5001:5001"
     volumes:
       - .:/app
     env_file:

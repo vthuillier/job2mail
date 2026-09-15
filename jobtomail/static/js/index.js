@@ -8,6 +8,7 @@ import {
   normalizeText,
   currentTravelOrigin,
   formatTravelInfo,
+  buildLinkedinPeopleUrl,
 } from "./shared.js";
 
 function activatePage(page) {
@@ -69,11 +70,34 @@ function activatePage(page) {
       .join("");
   }
 
+  let leafletLoadPromise = null;
+
+  function loadLeaflet() {
+    if (window.L) return Promise.resolve();
+    if (leafletLoadPromise) return leafletLoadPromise;
+    leafletLoadPromise = new Promise((resolve, reject) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      link.crossOrigin = "";
+      document.head.appendChild(link);
+
+      const script = document.createElement("script");
+      script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+      script.crossOrigin = "";
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Chargement de Leaflet impossible"));
+      document.body.appendChild(script);
+    });
+    return leafletLoadPromise;
+  }
+
   async function ensureMap() {
     if (state.mapReady) {
       state.map.invalidateSize();
       return;
     }
+    await loadLeaflet();
     state.map = L.map("map", { zoomControl: true });
     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; CARTO',
@@ -102,7 +126,7 @@ function activatePage(page) {
         if (!res.processed || (res.processed > 0 && !res.geocoded)) break;
         if (res.geocoded > 0) {
           await loadEntreprises({ skipMap: true });
-          updateMapMarkers();
+          await updateMapMarkers();
         }
       }
       return total;
@@ -152,51 +176,25 @@ function activatePage(page) {
     f.serpapiScanned = document.getElementById("filter-serpapi").checked;
   }
 
-  function applyAdvFilters(rows, { includeTravel = true } = {}) {
+  function buildFilterQueryParams({ includeTravel = true } = {}) {
+    const params = new URLSearchParams();
+    if (state.filter && state.filter !== "tous") params.set("status", state.filter);
+    if (state.search.trim()) params.set("search", state.search.trim());
     const f = state.advFilters;
-    let out = rows;
-
-    if (f.nafs.size) {
-      out = out.filter((e) => f.nafs.has(e.naf_code || ""));
-    }
-    if (f.effectifs.size) {
-      out = out.filter((e) => f.effectifs.has(e.effectif_code || "NN"));
-    }
-    if (f.commune) {
-      const c = f.commune.toLowerCase();
-      out = out.filter((e) => (e.commune || "").toLowerCase().includes(c));
-    }
-    if (f.categorie === "_none") {
-      out = out.filter((e) => !(e.categorie_entreprise || "").trim());
-    } else if (f.categorie) {
-      out = out.filter((e) => (e.categorie_entreprise || "") === f.categorie);
-    }
-    if (f.nature) {
-      out = out.filter((e) => (e.nature || "entreprise") === f.nature);
-    }
-    if (f.scoreMin != null && !Number.isNaN(f.scoreMin)) {
-      out = out.filter((e) => Number(e.score_pertinence || 0) >= f.scoreMin);
-    }
+    f.nafs.forEach((code) => params.append("naf", code));
+    f.effectifs.forEach((code) => params.append("effectif", code));
+    if (f.commune) params.set("commune", f.commune);
+    if (f.categorie) params.set("categorie", f.categorie);
+    if (f.nature) params.set("nature", f.nature);
+    if (f.scoreMin != null && !Number.isNaN(f.scoreMin)) params.set("score_min", f.scoreMin);
     if (includeTravel && f.travelMaxMin != null && !Number.isNaN(f.travelMaxMin)) {
-      out = out.filter((e) => {
-        const originOk = normalizeText(e.travel_origin) === normalizeText(currentTravelOrigin());
-        const noTolls = e.travel_without_tolls === 1 || e.travel_without_tolls === true;
-        return originOk && noTolls && Number(e.travel_duration_min) <= f.travelMaxMin;
-      });
+      params.set("travel_max_min", f.travelMaxMin);
     }
-    if (f.siegeOnly) {
-      out = out.filter((e) => e.est_siege === 1 || e.est_siege === true);
-    }
-    if (f.hasContact) {
-      out = out.filter((e) => (e.contact_prenom || "").trim() || (e.contact_nom || "").trim());
-    }
-    if (f.hasEmail) {
-      out = out.filter((e) => (e.contact_email || "").trim());
-    }
-    if (f.serpapiScanned) {
-      out = out.filter((e) => e.serpapi_scanned === 1 || e.serpapi_scanned === true);
-    }
-    return out;
+    if (f.siegeOnly) params.set("siege_only", "1");
+    if (f.hasContact) params.set("has_contact", "1");
+    if (f.hasEmail) params.set("has_email", "1");
+    if (f.serpapiScanned) params.set("serpapi_scanned", "1");
+    return params;
   }
 
   function updateAdvFilterUI() {
@@ -205,8 +203,8 @@ function activatePage(page) {
     badge.style.display = active ? "inline" : "none";
     badge.textContent = `${active} actif${active > 1 ? "s" : ""}`;
 
-    const total = state.entreprises.length;
-    const shown = filteredEntreprises().length;
+    const total = state.stats.counts.tous || 0;
+    const shown = state.total;
     const el = document.getElementById("filter-result");
     if (active || state.search.trim() || state.filter !== "tous") {
       const loading = state.travelLoading ? " · calcul trajets en cours…" : "";
@@ -223,10 +221,9 @@ function activatePage(page) {
     const prevEffs = new Set(state.advFilters.effectifs);
 
     const nafMap = new Map();
-    state.entreprises.forEach((e) => {
-      const code = e.naf_code || "";
+    state.nafCodesUsed.forEach(({ code, libelle }) => {
       if (!code) return;
-      if (!nafMap.has(code)) nafMap.set(code, e.naf_libelle || state.nafs[code] || code);
+      nafMap.set(code, libelle || state.nafs[code] || code);
     });
     Object.entries(state.nafs).forEach(([code, lib]) => {
       if (!nafMap.has(code)) nafMap.set(code, lib);
@@ -285,29 +282,19 @@ function activatePage(page) {
     document.getElementById("filter-email").checked = false;
     document.getElementById("filter-serpapi").checked = false;
     renderAdvFilterOptions();
-    renderTable();
+    loadEntreprises({ resetPage: true });
   }
 
   function onAdvFilterChange() {
     readAdvFiltersFromUI();
-    renderTable();
+    loadEntreprises({ resetPage: true });
     maybeRefreshTravelFilter();
   }
 
-  function entreprisesSansFiltreTrajet() {
-    const q = state.search.trim().toLowerCase();
-    let rows = state.entreprises;
-    if (state.filter !== "tous") {
-      rows = rows.filter((e) => (e.status || "a_postuler") === state.filter);
-    }
-    if (q) {
-      rows = rows.filter((e) =>
-        `${e.denomination || ""} ${e.commune || ""} ${e.contact_nom || ""} ${e.naf_code || ""} ${e.naf_libelle || ""}`
-          .toLowerCase()
-          .includes(q)
-      );
-    }
-    return applyAdvFilters(rows, { includeTravel: false });
+  async function fetchTravelCandidates() {
+    const params = buildFilterQueryParams({ includeTravel: false });
+    const res = await fetch(`/api/entreprises/lite?${params.toString()}`).then((r) => r.json());
+    return res.entreprises || [];
   }
 
   function travelNeedsRefresh(e) {
@@ -318,7 +305,7 @@ function activatePage(page) {
 
   async function computeTravelForCurrentFilter({ force = false } = {}) {
     const btn = document.getElementById("btn-compute-travel");
-    const candidates = entreprisesSansFiltreTrajet();
+    const candidates = await fetchTravelCandidates();
     const sirets = force
       ? candidates.map((e) => e.siret)
       : candidates.filter(travelNeedsRefresh).map((e) => e.siret);
@@ -385,28 +372,17 @@ function activatePage(page) {
   document.getElementById("btn-compute-travel").addEventListener("click", () => computeTravelForCurrentFilter({ force: true }));
   document.getElementById("btn-reset-filters").addEventListener("click", resetAdvFilters);
 
-  function filteredEntreprises() {
-    const q = state.search.trim().toLowerCase();
-    let rows = state.entreprises;
-    if (state.filter !== "tous") {
-      rows = rows.filter((e) => (e.status || "a_postuler") === state.filter);
-    }
-    if (q) {
-      rows = rows.filter((e) =>
-        `${e.denomination || ""} ${e.commune || ""} ${e.contact_nom || ""} ${e.naf_code || ""} ${e.naf_libelle || ""}`
-          .toLowerCase()
-          .includes(q)
-      );
-    }
-    rows = applyAdvFilters(rows);
-    return rows;
+  async function fetchMapRows() {
+    const params = buildFilterQueryParams({ includeTravel: true });
+    const res = await fetch(`/api/entreprises/lite?${params.toString()}`).then((r) => r.json());
+    return res.entreprises || [];
   }
 
-  function updateMapMarkers() {
+  async function updateMapMarkers() {
     if (!state.mapLayer) return;
-    const rows = filteredEntreprises().filter(
-      (e) => e.latitude != null && e.longitude != null
-    );
+    const allRows = await fetchMapRows();
+    state.mapMissingCount = allRows.filter((e) => e.latitude == null || e.longitude == null).length;
+    const rows = allRows.filter((e) => e.latitude != null && e.longitude != null);
     state.mapLayer.clearLayers();
     if (!rows.length) {
       state.map.setView([43.14, 6.07], 10);
@@ -448,13 +424,10 @@ function activatePage(page) {
 
   async function renderMap() {
     await ensureMap();
-    updateMapMarkers();
+    await updateMapMarkers();
 
-    const missing = state.entreprises.filter(
-      (e) => e.latitude == null || e.longitude == null
-    ).length;
-    if (missing > 0) {
-      toast(`Géocodage de ${missing} entreprise(s) en cours…`);
+    if (state.mapMissingCount > 0) {
+      toast(`Géocodage de ${state.mapMissingCount} entreprise(s) en cours…`);
       geocodeMissing().then((total) => {
         if (total > 0) toast(`${total} entreprise(s) positionnée(s) sur la carte`);
       });
@@ -534,11 +507,30 @@ function activatePage(page) {
     renderNafBox("cfg-naf-list", checkedAll);
   }
 
-  async function loadEntreprises({ skipMap = false } = {}) {
-    const res = await fetch("/api/entreprises").then((r) => r.json());
-    state.entreprises = res.entreprises || [];
-    renderAdvFilterOptions();
+  async function loadEntreprises({ skipMap = false, resetPage = false } = {}) {
+    if (resetPage) state.page = 1;
+    const params = buildFilterQueryParams();
+    params.set("page", state.page);
+    params.set("per_page", state.perPage);
+    const [listRes, statsRes] = await Promise.all([
+      fetch(`/api/entreprises?${params.toString()}`).then((r) => r.json()),
+      fetch("/api/entreprises/stats").then((r) => r.json()),
+    ]);
+    state.entreprises = listRes.entreprises || [];
+    state.total = listRes.total || 0;
+    state.page = listRes.page || 1;
+    state.pages = listRes.pages || 1;
+    state.stats = {
+      counts: statsRes.counts || { tous: 0 },
+      relances_dues: statsRes.relances_dues || 0,
+    };
     renderTable({ skipMap });
+  }
+
+  async function loadNafCodesUsed() {
+    const res = await fetch("/api/entreprises/naf-codes-used").then((r) => r.json());
+    state.nafCodesUsed = res.codes || [];
+    renderAdvFilterOptions();
   }
 
   function renderFilters(counts) {
@@ -551,28 +543,46 @@ function activatePage(page) {
       chip.textContent = `${STATUS_LABELS[key]} (${counts[key] || 0})`;
       chip.addEventListener("click", () => {
         state.filter = key;
-        renderTable();
+        loadEntreprises({ resetPage: true });
         maybeRefreshTravelFilter();
-        if (state.view === "map") updateMapMarkers();
       });
       wrap.appendChild(chip);
     });
   }
 
-  function renderTable({ skipMap = false } = {}) {
-    const counts = { tous: state.entreprises.length };
-    Object.keys(STATUS_LABELS).forEach((k) => {
-      if (k !== "tous") counts[k] = 0;
+  function renderPagination() {
+    const el = document.getElementById("pagination");
+    if (!el) return;
+    if (state.pages <= 1) {
+      el.innerHTML = "";
+      return;
+    }
+    el.innerHTML = `
+      <button type="button" class="btn btn-secondary btn-sm" id="page-prev" ${state.page <= 1 ? "disabled" : ""}>‹ Précédent</button>
+      <span class="pagination-info">Page ${state.page} / ${state.pages} — ${state.total} résultat${state.total > 1 ? "s" : ""}</span>
+      <button type="button" class="btn btn-secondary btn-sm" id="page-next" ${state.page >= state.pages ? "disabled" : ""}>Suivant ›</button>
+    `;
+    document.getElementById("page-prev")?.addEventListener("click", () => {
+      if (state.page > 1) {
+        state.page -= 1;
+        loadEntreprises({ skipMap: true });
+      }
     });
-    state.entreprises.forEach((e) => {
-      const s = e.status || "a_postuler";
-      if (counts[s] !== undefined) counts[s]++;
+    document.getElementById("page-next")?.addEventListener("click", () => {
+      if (state.page < state.pages) {
+        state.page += 1;
+        loadEntreprises({ skipMap: true });
+      }
     });
+  }
 
-    document.getElementById("st-total").textContent = counts.tous;
+  function renderTable({ skipMap = false } = {}) {
+    const counts = state.stats.counts || { tous: 0 };
+
+    document.getElementById("st-total").textContent = counts.tous || 0;
     document.getElementById("st-todo").textContent = counts.a_postuler || 0;
     document.getElementById("st-sent").textContent = (counts.postule || 0) + (counts.relance || 0);
-    const dues = state.entreprises.filter((e) => e.relance_info && e.relance_info.due && !e.relance_info.blocked).length;
+    const dues = state.stats.relances_dues || 0;
     const entretiens = (counts.entretien || 0) + (counts.offre || 0);
     const stRel = document.getElementById("st-relances");
     const stEnt = document.getElementById("st-entretiens");
@@ -580,8 +590,9 @@ function activatePage(page) {
     if (stEnt) stEnt.textContent = entretiens;
     renderFilters(counts);
 
-    const rows = filteredEntreprises();
+    const rows = state.entreprises;
     updateAdvFilterUI();
+    renderPagination();
 
     const tbody = document.getElementById("tbody");
     if (!rows.length) {
@@ -590,7 +601,7 @@ function activatePage(page) {
       const msg = hasFilters
         ? "Aucune entreprise ne correspond aux filtres."
         : "Aucune entreprise. Lance un scan Sirene.";
-      tbody.innerHTML = `<tr><td class="empty" colspan="8">${msg}</td></tr>`;
+      tbody.innerHTML = `<tr><td class="empty" colspan="9">${msg}</td></tr>`;
       if (state.view === "map" && !skipMap) updateMapMarkers();
       return;
     }
@@ -613,6 +624,7 @@ function activatePage(page) {
               ? `<span class="badge badge-nature-association">Association</span>`
               : "";
         return `<tr>
+          <td data-label=""><input type="checkbox" class="row-select-cb" data-siret="${esc(e.siret)}" ${state.selectedSirets.has(e.siret) ? "checked" : ""}></td>
           <td class="mono" data-label="Score">${score}</td>
           <td data-label="Entreprise">
             <div class="title">${esc(e.denomination)} ${natureBadge}</div>
@@ -626,7 +638,7 @@ function activatePage(page) {
           </td>
           <td class="mono" data-label="Effectif">${esc(e.effectif_libelle || "—")}</td>
           <td data-label="LinkedIn">
-            <a class="btn btn-secondary btn-sm" href="${esc(e.linkedin_people_url)}" target="_blank" rel="noopener">People ↗</a>
+            <a class="btn btn-secondary btn-sm" href="${esc(buildLinkedinPeopleUrl(e.denomination, e.commune))}" target="_blank" rel="noopener">People ↗</a>
             ${e.linkedin_company ? `<div class="sub"><a class="ext" href="${esc(e.linkedin_company)}" target="_blank" rel="noopener">Company</a></div>` : ""}
           </td>
           <td data-label="Contact">
@@ -638,6 +650,7 @@ function activatePage(page) {
             <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
               <button class="btn btn-secondary btn-sm btn-edit" data-siret="${esc(e.siret)}">Gérer</button>
               <button class="btn btn-sky btn-sm btn-scan-one" data-siret="${esc(e.siret)}">Scan</button>
+              <button class="btn btn-secondary btn-sm btn-export-one" data-siret="${esc(e.siret)}">PDF</button>
             </div>
           </td>
         </tr>`;
@@ -650,8 +663,92 @@ function activatePage(page) {
     tbody.querySelectorAll(".btn-scan-one").forEach((btn) => {
       btn.addEventListener("click", () => scanOneEntreprise(btn.dataset.siret));
     });
+    tbody.querySelectorAll(".btn-export-one").forEach((btn) => {
+      btn.addEventListener("click", () => downloadEntreprisePdf(btn.dataset.siret));
+    });
+    tbody.querySelectorAll(".row-select-cb").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        if (cb.checked) state.selectedSirets.add(cb.dataset.siret);
+        else state.selectedSirets.delete(cb.dataset.siret);
+        updateExportSelectedButton();
+        updateSelectAllCheckbox(rows);
+      });
+    });
+    updateSelectAllCheckbox(rows);
     if (state.view === "map" && !skipMap) updateMapMarkers();
   }
+
+  function updateExportSelectedButton() {
+    const btn = document.getElementById("btn-export-selected");
+    if (!btn) return;
+    const n = state.selectedSirets.size;
+    btn.textContent = `Exporter PDF (${n})`;
+    btn.style.display = n > 0 ? "" : "none";
+  }
+
+  function updateSelectAllCheckbox(visibleRows) {
+    const selectAll = document.getElementById("select-all-cb");
+    if (!selectAll) return;
+    const visibleSirets = visibleRows.map((e) => e.siret);
+    const allSelected = visibleSirets.length > 0 && visibleSirets.every((s) => state.selectedSirets.has(s));
+    selectAll.checked = allSelected;
+    selectAll.indeterminate = !allSelected && visibleSirets.some((s) => state.selectedSirets.has(s));
+  }
+
+  function triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadEntreprisePdf(siret) {
+    const a = document.createElement("a");
+    a.href = `/api/entreprises/${encodeURIComponent(siret)}/export.pdf`;
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  async function exportSelectedPdf() {
+    const sirets = [...state.selectedSirets];
+    if (!sirets.length) return;
+    const btn = document.getElementById("btn-export-selected");
+    if (btn) btn.disabled = true;
+    try {
+      const res = await fetch("/api/entreprises/export.pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sirets }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Export impossible");
+      }
+      const blob = await res.blob();
+      triggerDownload(blob, `export-entreprises-${sirets.length}.pdf`);
+      toast(`${sirets.length} fiche(s) exportée(s)`);
+    } catch (err) {
+      toast(err.message || "Export impossible", "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  document.getElementById("select-all-cb").addEventListener("change", (ev) => {
+    const pageSirets = state.entreprises.map((e) => e.siret);
+    if (ev.target.checked) pageSirets.forEach((s) => state.selectedSirets.add(s));
+    else pageSirets.forEach((s) => state.selectedSirets.delete(s));
+    renderTable();
+    updateExportSelectedButton();
+  });
+
+  document.getElementById("btn-export-selected").addEventListener("click", exportSelectedPdf);
 
   function formatDateFr(iso) {
     if (!iso) return "—";
@@ -751,14 +848,22 @@ function activatePage(page) {
     }
   }
 
-  function openDrawer(siret) {
-    const e = state.entreprises.find((x) => x.siret === siret);
-    if (!e) return;
+  async function openDrawer(siret) {
+    let e = state.entreprises.find((x) => x.siret === siret);
+    if (!e) {
+      const res = await fetch(`/api/entreprises/${encodeURIComponent(siret)}`).then((r) => r.json());
+      if (res.error || !res.entreprise) {
+        toast(res.error || "Entreprise introuvable", "error");
+        return;
+      }
+      e = res.entreprise;
+      state.entreprises.push(e);
+    }
     closeAddModal({ keepOverlay: true });
     document.getElementById("d-siret").value = e.siret;
     document.getElementById("d-denom").textContent = e.denomination;
     document.getElementById("d-adresse").textContent = `${e.adresse || ""} (${e.commune || ""})`;
-    document.getElementById("d-li-people").href = e.linkedin_people_url;
+    document.getElementById("d-li-people").href = buildLinkedinPeopleUrl(e.denomination, e.commune);
     document.getElementById("d-site").value = e.site_web || "";
     document.getElementById("d-li-company").value = e.linkedin_company || "";
     document.getElementById("d-prenom").value = e.contact_prenom || "";
@@ -1286,32 +1391,81 @@ function activatePage(page) {
     }
   });
 
+  function addNafCode(code, lib, { checkBoxId } = {}) {
+    if (!code) return toast("Code NAF requis", "error");
+    state.nafs[code] = lib || code;
+    renderNafs();
+    renderCfgNafs();
+    ["naf-list", "cfg-naf-list"].forEach((boxId) => {
+      if (checkBoxId && boxId !== checkBoxId) return;
+      const input = document.querySelector(`#${boxId} input[value="${CSS.escape(code)}"]`);
+      if (input) input.checked = true;
+    });
+    toast(`NAF ${code} ajouté`);
+  }
+
+  function wireNafSearch(inputId, resultsBoxId, checkBoxId) {
+    const input = document.getElementById(inputId);
+    const box = document.getElementById(resultsBoxId);
+    let timer = null;
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      const q = input.value.trim();
+      if (!q) {
+        box.innerHTML = "";
+        return;
+      }
+      timer = setTimeout(async () => {
+        try {
+          const res = await fetch(`/api/naf/search?q=${encodeURIComponent(q)}`);
+          const data = await res.json();
+          const results = data.results || [];
+          box.innerHTML = "";
+          if (!results.length) {
+            box.innerHTML = `<p class="help">Aucun résultat — essaie un autre mot, ou saisis le code NAF directement ci-dessous si tu le connais.</p>`;
+            return;
+          }
+          results.forEach((r) => {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "btn btn-secondary";
+            btn.style.width = "100%";
+            btn.style.textAlign = "left";
+            const strong = document.createElement("strong");
+            strong.textContent = r.code;
+            btn.appendChild(strong);
+            btn.appendChild(document.createTextNode(` — ${r.libelle}`));
+            btn.addEventListener("click", () => {
+              addNafCode(r.code, r.libelle, { checkBoxId });
+              input.value = "";
+              box.innerHTML = "";
+            });
+            box.appendChild(btn);
+          });
+        } catch (err) {
+          box.innerHTML = `<p class="help">Recherche indisponible.</p>`;
+        }
+      }, 250);
+    });
+  }
+
+  wireNafSearch("naf-search", "naf-search-results", "naf-list");
+  wireNafSearch("cfg-naf-search", "cfg-naf-search-results", "cfg-naf-list");
+
   document.getElementById("btn-cfg-add-naf").addEventListener("click", () => {
     const code = document.getElementById("cfg-naf-code").value.trim();
     const lib = document.getElementById("cfg-naf-lib").value.trim() || code;
-    if (!code) return toast("Code NAF requis", "error");
-    state.nafs[code] = lib;
+    addNafCode(code, lib, { checkBoxId: "cfg-naf-list" });
     document.getElementById("cfg-naf-code").value = "";
     document.getElementById("cfg-naf-lib").value = "";
-    renderNafs();
-    renderCfgNafs();
-    const input = document.querySelector(`#cfg-naf-list input[value="${CSS.escape(code)}"]`);
-    if (input) input.checked = true;
-    toast(`NAF ${code} ajouté`);
   });
 
   document.getElementById("btn-add-naf").addEventListener("click", () => {
     const code = document.getElementById("naf-code").value.trim();
     const lib = document.getElementById("naf-lib").value.trim() || code;
-    if (!code) return toast("Code NAF requis", "error");
-    state.nafs[code] = lib;
+    addNafCode(code, lib, { checkBoxId: "naf-list" });
     document.getElementById("naf-code").value = "";
     document.getElementById("naf-lib").value = "";
-    renderNafs();
-    renderCfgNafs();
-    const input = document.querySelector(`#naf-list input[value="${CSS.escape(code)}"]`);
-    if (input) input.checked = true;
-    toast(`NAF ${code} ajouté`);
   });
 
   async function runPrune({ silent = false } = {}) {
@@ -1388,6 +1542,13 @@ function activatePage(page) {
     }
   });
 
+  document.getElementById("scan-national").addEventListener("change", (e) => {
+    const disabled = e.target.checked;
+    ["scan-point", "scan-rayon", "scan-depts"].forEach((id) => {
+      document.getElementById(id).disabled = disabled;
+    });
+  });
+
   document.getElementById("btn-sirene").addEventListener("click", async () => {
     const btn = document.getElementById("btn-sirene");
     const selected = {};
@@ -1404,7 +1565,9 @@ function activatePage(page) {
     btn.innerHTML = `<span class="spinner"></span> Scan Sirene…`;
 
     try {
+      const national = document.getElementById("scan-national").checked;
       const res = await startJob("/api/scan/sirene", {
+        national,
         point_ref: document.getElementById("scan-point").value.trim(),
         rayon_km: document.getElementById("scan-rayon").value,
         departements: document.getElementById("scan-depts").value,
@@ -1590,8 +1753,8 @@ function activatePage(page) {
     state.search = "";
     document.getElementById("search").value = "";
     const first = res.relances[0];
-    renderTable();
-    if (first) openDrawer(first.siret);
+    await loadEntreprises({ resetPage: true });
+    if (first) await openDrawer(first.siret);
   });
 
   document.getElementById("btn-dirigeant-one").addEventListener("click", async () => {
@@ -1657,22 +1820,31 @@ function activatePage(page) {
     }
   });
 
-  document.getElementById("btn-refresh").addEventListener("click", loadEntreprises);
+  document.getElementById("btn-refresh").addEventListener("click", async () => {
+    await loadEntreprises();
+    await loadNafCodesUsed();
+  });
+
+  let searchDebounce = null;
   document.getElementById("search").addEventListener("input", (e) => {
     state.search = e.target.value;
-    renderTable();
-    maybeRefreshTravelFilter();
-    if (state.view === "map") updateMapMarkers();
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => {
+      loadEntreprises({ resetPage: true });
+      maybeRefreshTravelFilter();
+    }, 300);
   });
 
   document.getElementById("btn-reset-db").addEventListener("click", async () => {
     if (!confirm("Vider toutes les entreprises ? (config conservée)")) return;
     await fetch("/api/db/reset", { method: "POST" });
     toast("Base entreprises vidée");
-    await loadEntreprises();
+    await loadEntreprises({ resetPage: true });
+    await loadNafCodesUsed();
   });
 
   (async () => {
     await loadConfig();
+    await loadNafCodesUsed();
     await loadEntreprises();
   })();

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Column, Float, Integer, MetaData, String, Table, Text, text
+from sqlalchemy import Column, Float, Index, Integer, MetaData, String, Table, Text, text
 
 metadata = MetaData()
 
@@ -71,6 +71,10 @@ entreprises = Table(
     Column("travel_distance_km", Float),
     Column("travel_without_tolls", Integer, server_default=text("0")),
     Column("travel_updated_at", Text),
+)
+
+ix_entreprises_score_denom = Index(
+    "ix_entreprises_score_denom", entreprises.c.score_pertinence, entreprises.c.denomination
 )
 
 processed_replies = Table(

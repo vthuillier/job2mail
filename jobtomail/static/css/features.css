@@ -149,6 +149,15 @@
   }
   .list-panel.hidden { display: none; }
 
+  .pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 0 4px;
+  }
+  .pagination-info { color: var(--muted); font-size: 0.82rem; }
+
   .leaflet-popup-content-wrapper {
     background: var(--bg-elevated);
     color: var(--text);

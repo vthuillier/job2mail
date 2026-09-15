@@ -9,6 +9,7 @@ from datetime import timedelta
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, redirect, request, url_for
+from flask_compress import Compress
 
 from jobtomail.constants import TEMPLATES_DIR
 from jobtomail import db
@@ -54,6 +55,7 @@ def create_app() -> Flask:
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"] = os.getenv("SESSION_COOKIE_SECURE", "0") == "1"
+    Compress(app)
 
     @app.after_request
     def _security_headers(response):

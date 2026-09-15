@@ -61,6 +61,26 @@ TRANCHE_EFFECTIFS = {
     "53": "10 000 salariés et plus",
 }
 
+STATUS_LABELS = {
+    "a_postuler": "À postuler",
+    "hors_champs": "Hors champs",
+    "postule": "Postulé",
+    "relance": "Relance",
+    "entretien": "Entretien",
+    "refus": "Refus",
+    "offre": "Offre",
+}
+
+STATUS_COLORS = {
+    "a_postuler": "#fbbf24",
+    "hors_champs": "#8b9aab",
+    "postule": "#38bdf8",
+    "relance": "#2dd4bf",
+    "entretien": "#34d399",
+    "refus": "#fb7185",
+    "offre": "#34d399",
+}
+
 MOTS_CLES_POSTE = [
     "CTO",
     "tech lead",

@@ -19,6 +19,19 @@
     offre: "#34d399",
   };
 
+  const MOTS_CLES_POSTE = [
+    "CTO", "tech lead", "responsable technique", "directeur technique", "VP Engineering",
+    "Head of Engineering", "RH", "recrutement", "recruteur", "talent acquisition",
+    "People Manager", "fondateur", "co-fondateur", "PDG", "directeur", "gérant",
+  ];
+
+  export function buildLinkedinPeopleUrl(denomination, commune) {
+    const mots = MOTS_CLES_POSTE.map((m) => `"${m}"`).join(" OR ");
+    const zone = commune || "Var";
+    const keywords = `"${denomination || ""}" ${zone} (${mots})`;
+    return `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(keywords)}&origin=GLOBAL_SEARCH_HEADER`;
+  }
+
   export const TRANCHE_EFFECTIFS = {
     NN: "Non renseigné",
     "00": "0 salarié",
@@ -40,8 +53,15 @@
 
   export const state = {
     entreprises: [],
+    selectedSirets: new Set(),
     filter: "tous",
     search: "",
+    page: 1,
+    perPage: 100,
+    total: 0,
+    pages: 1,
+    stats: { counts: { tous: 0 }, relances_dues: 0 },
+    nafCodesUsed: [],
     config: {},
     nafs: {},
     view: "list",
