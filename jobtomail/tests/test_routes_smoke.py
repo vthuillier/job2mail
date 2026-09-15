@@ -69,3 +69,23 @@ def test_index_page_has_db_backend_section(client):
     res = client.get("/")
     assert res.status_code == 200
     assert b'id="db-backend-select"' in res.data
+
+
+def test_login_success_sets_real_user_id_in_session(client, monkeypatch):
+    """Après un login réussi, session['user_id'] doit pointer vers une vraie
+    ligne de la table users (et non juste être un entier magique en dur)."""
+    monkeypatch.setenv("APP_PASSWORD", "s3cret")
+
+    res = client.post("/login", data={"password": "s3cret"})
+    assert res.status_code in (302, 303)
+
+    with client.session_transaction() as sess:
+        assert sess["authenticated"] is True
+        assert "user_id" in sess
+        user_id = sess["user_id"]
+
+    from jobtomail import db
+
+    row = db.get_user_by_email("default@localhost")
+    assert row is not None
+    assert row["id"] == user_id

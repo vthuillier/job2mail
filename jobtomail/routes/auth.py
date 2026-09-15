@@ -9,7 +9,11 @@ import time
 
 from flask import Blueprint, redirect, render_template, request, session, url_for
 
+from jobtomail import db
+
 logger = logging.getLogger(__name__)
+
+DEFAULT_USER_EMAIL = "default@localhost"
 
 bp = Blueprint("auth", __name__)
 
@@ -77,6 +81,20 @@ def _register_success(ip: str) -> None:
     _locked_until.pop(ip, None)
 
 
+def _ensure_default_user() -> int:
+    """Garantit qu'une vraie ligne `users` existe pour l'utilisateur par défaut
+    (mot de passe partagé, Phase 1) et renvoie son id.
+
+    Temporaire : tant qu'il n'y a qu'un mot de passe partagé, tout le monde qui
+    se connecte se voit attribuer ce même utilisateur. Remplacé en Phase 2 par
+    une vraie identité par utilisateur (magic link / Google OAuth).
+    """
+    row = db.get_user_by_email(DEFAULT_USER_EMAIL)
+    if row:
+        return row["id"]
+    return db.create_user(DEFAULT_USER_EMAIL)
+
+
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if is_authenticated():
@@ -93,6 +111,7 @@ def login():
             if check_password(password):
                 _register_success(ip)
                 session.clear()
+                session["user_id"] = _ensure_default_user()
                 session["authenticated"] = True
                 session.permanent = True
                 logger.info("Connexion réussie depuis %s", ip)

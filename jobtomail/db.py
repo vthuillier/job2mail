@@ -22,6 +22,7 @@ from jobtomail.schema import (
     metadata,
     processed_replies as processed_replies_table,
     user_config as user_config_table,
+    users as users_table,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,27 @@ def _migrate(engine: Engine) -> None:
                 logger.info("Migration : ajout colonne %s.%s", table.name, col.name)
                 conn.exec_driver_sql(ddl)
     ix_entreprises_score_denom.create(engine, checkfirst=True)
+
+
+def get_user_by_email(email: str) -> dict[str, Any] | None:
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            select(users_table).where(users_table.c.email == email)
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+def create_user(email: str, google_sub: str | None = None, is_admin: bool = False) -> int:
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            users_table.insert().values(
+                email=email,
+                google_sub=google_sub,
+                created_at=_now(),
+                is_admin=int(is_admin),
+            )
+        )
+    return result.inserted_primary_key[0]
 
 
 def create_job_row(user_id: int, job_id: str, kind: str, params: dict[str, Any] | None = None) -> None:
