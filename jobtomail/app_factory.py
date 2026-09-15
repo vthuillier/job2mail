@@ -24,7 +24,9 @@ from jobtomail.routes.scans import bp as scans_bp
 
 logger = logging.getLogger(__name__)
 
-_PUBLIC_ENDPOINTS = frozenset({"auth.login", "static"})
+_PUBLIC_ENDPOINTS = frozenset(
+    {"auth.login", "auth.request_magic_link", "auth.consume_magic_link", "static"}
+)
 
 
 def _resolve_secret_key() -> str:
