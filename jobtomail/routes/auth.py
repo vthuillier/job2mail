@@ -7,10 +7,11 @@ import logging
 import os
 import time
 
-from flask import Blueprint, current_app, redirect, render_template, request, session, url_for
+from flask import Blueprint, redirect, render_template, request, session, url_for
 
 from jobtomail import db
 from jobtomail.services import magic_link
+from jobtomail.services.mailer_transactional import send_magic_link_email
 
 logger = logging.getLogger(__name__)
 
@@ -103,18 +104,6 @@ def _safe_next_url(raw: str | None) -> str:
     if raw and raw.startswith("/") and not raw.startswith("//") and not raw.startswith("/\\"):
         return raw
     return url_for("main.index")
-
-
-def send_magic_link_email(to_email: str, link: str) -> None:
-    # Placeholder until Task 6 wires transactional sending through a real
-    # provider. The link embeds a signed, bearer-equivalent login token
-    # valid for 15 minutes, so it must never be logged outside of local
-    # debug runs — logging it unconditionally would leak a login credential
-    # to anyone with log access.
-    if current_app.debug:
-        logger.info("[dev] Lien magique pour %s : %s", to_email, link)
-    else:
-        logger.info("Lien magique demandé pour %s", to_email)
 
 
 def _ensure_default_user() -> int:

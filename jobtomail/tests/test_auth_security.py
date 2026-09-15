@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 import pytest
 
 from jobtomail.routes import auth as auth_module
@@ -58,28 +56,11 @@ def test_consume_magic_link_ignores_open_redirect_next_param(client, app):
 
 
 # --- Critical 2: magic-link token must not leak into logs outside debug -------
-
-
-def test_send_magic_link_email_does_not_log_raw_link_outside_debug(app, caplog):
-    app.debug = False
-    with app.app_context(), caplog.at_level(logging.INFO, logger=auth_module.logger.name):
-        auth_module.send_magic_link_email(
-            "someone@example.com", "https://example.test/auth/magic/super-secret-token"
-        )
-    assert "super-secret-token" not in caplog.text
-    assert "someone@example.com" in caplog.text
-
-
-def test_send_magic_link_email_logs_raw_link_in_debug(app, caplog):
-    app.debug = True
-    try:
-        with app.app_context(), caplog.at_level(logging.INFO, logger=auth_module.logger.name):
-            auth_module.send_magic_link_email(
-                "someone@example.com", "https://example.test/auth/magic/super-secret-token"
-            )
-        assert "super-secret-token" in caplog.text
-    finally:
-        app.debug = False
+#
+# `send_magic_link_email` was extracted into `jobtomail.services.mailer_transactional`
+# (Task 6). Its debug-gating behaviour (never logging the raw link outside
+# debug) is now covered directly in `test_mailer_transactional.py`, against
+# that module's own logger.
 
 
 # --- Important: password and magic-link rate limiting must be independent -----
