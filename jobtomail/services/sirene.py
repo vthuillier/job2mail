@@ -41,27 +41,26 @@ def _chunked(items: list[str], size: int) -> list[list[str]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-def build_sirene_query_naf(naf_codes: list[str], code_communes: list[str]) -> str:
+def build_sirene_query_naf(naf_codes: list[str], code_communes: list[str] | None = None) -> str:
     nafs = " OR ".join(naf_codes)
-    communes = " OR ".join(code_communes)
-    return (
-        f"periode(activitePrincipaleEtablissement:({nafs}) "
-        f"AND etatAdministratifEtablissement:A) "
-        f"AND codeCommuneEtablissement:({communes})"
-    )
+    query = f"periode(activitePrincipaleEtablissement:({nafs}) AND etatAdministratifEtablissement:A)"
+    if code_communes:
+        query += f" AND codeCommuneEtablissement:({' OR '.join(code_communes)})"
+    return query
 
 
 def build_sirene_query_categorie_juridique(
     categories_juridiques: list[str],
-    code_communes: list[str],
+    code_communes: list[str] | None = None,
     *,
     employeur_seulement: bool = False,
 ) -> str:
     parts = [
         "periode(etatAdministratifEtablissement:A)",
-        f"codeCommuneEtablissement:({' OR '.join(code_communes)})",
         f"categorieJuridiqueUniteLegale:({' OR '.join(categories_juridiques)})",
     ]
+    if code_communes:
+        parts.append(f"codeCommuneEtablissement:({' OR '.join(code_communes)})")
     if employeur_seulement:
         parts.append("caractereEmployeurUniteLegale:O")
     return " AND ".join(parts)
@@ -263,7 +262,7 @@ def _etab_to_row(
 def _insert_etabs(
     etabs: list[dict],
     *,
-    communes: dict[str, CommuneInfo],
+    communes: dict[str, CommuneInfo] | None = None,
     naf_code: str | None = None,
     naf_libelle: str | None = None,
     naf_labels: dict[str, str] | None = None,
@@ -272,20 +271,20 @@ def _insert_etabs(
     """Insère les établissements d'un lot groupé. Comme le lot couvre plusieurs
     communes à la fois, la commune de chaque établissement est retrouvée via
     son propre code retourné par l'API (adresseEtablissement.codeCommuneEtablissement),
-    au lieu d'être passée en paramètre unique."""
+    au lieu d'être passée en paramètre unique.
+
+    Sans `communes` (scan national) : le nom de commune est lu directement sur
+    l'établissement (adresseEtablissement), et lat/lon restent vides — prune.py
+    géocode à la volée au premier calcul de trajet."""
     added = 0
     for etab in etabs:
-        code_commune = etab.get("adresseEtablissement", {}).get("codeCommuneEtablissement")
-        commune_info = communes.get(code_commune) or {}
-        if not commune_info:
-            logger.debug(
-                "Commune %s absente du lot demandé (établissement %s conservé sans géoloc)",
-                code_commune,
-                etab.get("siret"),
-            )
+        adr = etab.get("adresseEtablissement", {})
+        code_commune = adr.get("codeCommuneEtablissement")
+        commune_info = (communes or {}).get(code_commune) or {}
+        nom_commune = str(commune_info.get("nom") or adr.get("libelleCommuneEtablissement") or "")
         row = _etab_to_row(
             etab,
-            nom_commune=str(commune_info.get("nom", "")),
+            nom_commune=nom_commune,
             lat_commune=commune_info.get("lat"),
             lon_commune=commune_info.get("lon"),
             naf_code=naf_code,
@@ -310,9 +309,11 @@ def run_sirene_scan(
     insee_token: str,
     include_mairies: bool = True,
     include_associations: bool = True,
+    national: bool = False,
 ) -> dict[str, Any]:
     logger.info(
-        "Démarrage scan Sirene — point=%s rayon=%s nafs=%d depts=%s mairies=%s associations=%s",
+        "Démarrage scan Sirene — national=%s point=%s rayon=%s nafs=%d depts=%s mairies=%s associations=%s",
+        national,
         point_ref,
         rayon_km,
         len(nafs),
@@ -323,18 +324,14 @@ def run_sirene_scan(
 
     db.set_config_values(
         {
-            "point_ref": point_ref,
-            "rayon_km": str(rayon_km),
-            "departements": ", ".join(departements),
+            "point_ref": "France entière" if national else point_ref,
+            "rayon_km": "0" if national else str(rayon_km),
+            "departements": "France entière" if national else ", ".join(departements),
             "nafs": nafs,
             "scan_mairies": "1" if include_mairies else "0",
             "scan_associations": "1" if include_associations else "0",
         }
     )
-
-    communes = get_communes_dans_rayon(point_ref, rayon_km, departements)
-    if not communes:
-        raise ValueError("Aucune commune trouvée dans ce rayon")
 
     headers = {"X-INSEE-Api-Key-Integration": insee_token}
     added_count = 0
@@ -342,108 +339,179 @@ def run_sirene_scan(
     added_associations = 0
     requests_sent = 0
 
-    commune_batches = _chunked(list(communes.keys()), SIRENE_COMMUNE_CHUNK_SIZE)
+    if national:
+        # Pas de filtrage commune du tout : une requête par lot NAF/CJ, paginée
+        # par curseur (pas de plafond de résultats côté API). Aucune énumération
+        # préalable des ~35000 communes françaises n'est nécessaire.
+        communes: dict[str, CommuneInfo] = {}
 
-    # 1) Entreprises par codes NAF — un seul lot NAF x communes par requête au
-    # lieu d'une requête par paire (NAF, commune) : le nombre de requêtes passe
-    # de len(nafs) x len(communes) à ceil(len(nafs)/20) x ceil(len(communes)/40).
-    if nafs:
-        for naf_batch in _chunked(list(nafs.keys()), SIRENE_NAF_CHUNK_SIZE):
-            for commune_batch in commune_batches:
+        if nafs:
+            for naf_batch in _chunked(list(nafs.keys()), SIRENE_NAF_CHUNK_SIZE):
                 requests_sent += 1
-                logger.debug("Scan NAF=%s / %d commune(s)", ",".join(naf_batch), len(commune_batch))
+                logger.debug("Scan national NAF=%s", ",".join(naf_batch))
                 try:
-                    etabs = search_batched_by_commune(
-                        lambda ccs, nb=naf_batch: build_sirene_query_naf(nb, ccs),
-                        commune_batch,
+                    etabs = search_sirene(
+                        build_sirene_query_naf(naf_batch),
                         headers,
                         label=f"NAF={','.join(naf_batch)}",
                     )
                 except Exception:
                     logger.exception("Échec recherche Sirene NAF batch=%s", naf_batch)
                     continue
-
-                logger.info(
-                    "NAF %s / %d commune(s) → %d établissement(s) brut(s)",
-                    ",".join(naf_batch),
-                    len(commune_batch),
-                    len(etabs),
-                )
-                added_count += _insert_etabs(
-                    etabs,
-                    communes=communes,
-                    naf_labels=nafs,
-                    nature_force="entreprise",
-                )
+                logger.info("NAF %s → %d établissement(s) brut(s)", ",".join(naf_batch), len(etabs))
+                added_count += _insert_etabs(etabs, naf_labels=nafs, nature_force="entreprise")
                 time.sleep(0.2)
 
-    # 2) Mairies (communes — catégorie juridique 7210) : un seul code CJ, donc
-    # seules les communes ont besoin d'être découpées en lots.
-    if include_mairies:
-        cj_codes = list(MAIRIE_CATEGORIES_JURIDIQUES.keys())
-        for commune_batch in commune_batches:
+        if include_mairies:
+            cj_codes = list(MAIRIE_CATEGORIES_JURIDIQUES.keys())
             requests_sent += 1
-            logger.debug("Scan mairies / %d commune(s)", len(commune_batch))
             try:
-                etabs = search_batched_by_commune(
-                    lambda ccs: build_sirene_query_categorie_juridique(cj_codes, ccs),
-                    commune_batch,
+                etabs = search_sirene(
+                    build_sirene_query_categorie_juridique(cj_codes),
                     headers,
                     label="mairies",
                 )
             except Exception:
                 logger.exception("Échec scan mairies")
-                continue
-
-            logger.info("Mairies / %d commune(s) → %d établissement(s)", len(commune_batch), len(etabs))
-            n = _insert_etabs(etabs, communes=communes, nature_force="mairie")
+                etabs = []
+            logger.info("Mairies (national) → %d établissement(s)", len(etabs))
+            n = _insert_etabs(etabs, nature_force="mairie")
             added_count += n
             added_mairies += n
-            time.sleep(0.2)
 
-    # 3) Associations employeuses (déclarées / RUP / droit local…) — les 5
-    # catégories juridiques sont elles aussi regroupées dans la même requête.
-    if include_associations:
-        cj_codes = list(ASSOCIATION_CATEGORIES_JURIDIQUES.keys())
-        for cj_batch in _chunked(cj_codes, SIRENE_CJ_CHUNK_SIZE):
-            for commune_batch in commune_batches:
+        if include_associations:
+            cj_codes = list(ASSOCIATION_CATEGORIES_JURIDIQUES.keys())
+            for cj_batch in _chunked(cj_codes, SIRENE_CJ_CHUNK_SIZE):
                 requests_sent += 1
-                logger.debug(
-                    "Scan associations CJ=%s / %d commune(s)",
-                    ",".join(cj_batch),
-                    len(commune_batch),
-                )
                 try:
-                    etabs = search_batched_by_commune(
-                        lambda ccs, cjb=cj_batch: build_sirene_query_categorie_juridique(
-                            cjb, ccs, employeur_seulement=True
-                        ),
-                        commune_batch,
+                    etabs = search_sirene(
+                        build_sirene_query_categorie_juridique(cj_batch, employeur_seulement=True),
                         headers,
                         label="associations",
                     )
                 except Exception:
                     logger.exception("Échec scan associations CJ batch=%s", cj_batch)
                     continue
-
-                logger.info(
-                    "Associations / %d commune(s) → %d établissement(s)",
-                    len(commune_batch),
-                    len(etabs),
-                )
-                n = _insert_etabs(etabs, communes=communes, nature_force="association")
+                logger.info("Associations (national) CJ=%s → %d établissement(s)", ",".join(cj_batch), len(etabs))
+                n = _insert_etabs(etabs, nature_force="association")
                 added_count += n
                 added_associations += n
                 time.sleep(0.2)
 
-    logger.info(
-        "Scan Sirene terminé — +%d (+%d mairies, +%d associations), %d requête(s), %d communes",
-        added_count,
-        added_mairies,
-        added_associations,
-        requests_sent,
-        len(communes),
-    )
+        logger.info(
+            "Scan Sirene national terminé — +%d (+%d mairies, +%d associations), %d requête(s)",
+            added_count,
+            added_mairies,
+            added_associations,
+            requests_sent,
+        )
+    else:
+        communes = get_communes_dans_rayon(point_ref, rayon_km, departements)
+        if not communes:
+            raise ValueError("Aucune commune trouvée dans ce rayon")
+
+        commune_batches = _chunked(list(communes.keys()), SIRENE_COMMUNE_CHUNK_SIZE)
+
+        # 1) Entreprises par codes NAF — un seul lot NAF x communes par requête au
+        # lieu d'une requête par paire (NAF, commune) : le nombre de requêtes passe
+        # de len(nafs) x len(communes) à ceil(len(nafs)/20) x ceil(len(communes)/40).
+        if nafs:
+            for naf_batch in _chunked(list(nafs.keys()), SIRENE_NAF_CHUNK_SIZE):
+                for commune_batch in commune_batches:
+                    requests_sent += 1
+                    logger.debug("Scan NAF=%s / %d commune(s)", ",".join(naf_batch), len(commune_batch))
+                    try:
+                        etabs = search_batched_by_commune(
+                            lambda ccs, nb=naf_batch: build_sirene_query_naf(nb, ccs),
+                            commune_batch,
+                            headers,
+                            label=f"NAF={','.join(naf_batch)}",
+                        )
+                    except Exception:
+                        logger.exception("Échec recherche Sirene NAF batch=%s", naf_batch)
+                        continue
+
+                    logger.info(
+                        "NAF %s / %d commune(s) → %d établissement(s) brut(s)",
+                        ",".join(naf_batch),
+                        len(commune_batch),
+                        len(etabs),
+                    )
+                    added_count += _insert_etabs(
+                        etabs,
+                        communes=communes,
+                        naf_labels=nafs,
+                        nature_force="entreprise",
+                    )
+                    time.sleep(0.2)
+
+        # 2) Mairies (communes — catégorie juridique 7210) : un seul code CJ, donc
+        # seules les communes ont besoin d'être découpées en lots.
+        if include_mairies:
+            cj_codes = list(MAIRIE_CATEGORIES_JURIDIQUES.keys())
+            for commune_batch in commune_batches:
+                requests_sent += 1
+                logger.debug("Scan mairies / %d commune(s)", len(commune_batch))
+                try:
+                    etabs = search_batched_by_commune(
+                        lambda ccs: build_sirene_query_categorie_juridique(cj_codes, ccs),
+                        commune_batch,
+                        headers,
+                        label="mairies",
+                    )
+                except Exception:
+                    logger.exception("Échec scan mairies")
+                    continue
+
+                logger.info("Mairies / %d commune(s) → %d établissement(s)", len(commune_batch), len(etabs))
+                n = _insert_etabs(etabs, communes=communes, nature_force="mairie")
+                added_count += n
+                added_mairies += n
+                time.sleep(0.2)
+
+        # 3) Associations employeuses (déclarées / RUP / droit local…) — les 5
+        # catégories juridiques sont elles aussi regroupées dans la même requête.
+        if include_associations:
+            cj_codes = list(ASSOCIATION_CATEGORIES_JURIDIQUES.keys())
+            for cj_batch in _chunked(cj_codes, SIRENE_CJ_CHUNK_SIZE):
+                for commune_batch in commune_batches:
+                    requests_sent += 1
+                    logger.debug(
+                        "Scan associations CJ=%s / %d commune(s)",
+                        ",".join(cj_batch),
+                        len(commune_batch),
+                    )
+                    try:
+                        etabs = search_batched_by_commune(
+                            lambda ccs, cjb=cj_batch: build_sirene_query_categorie_juridique(
+                                cjb, ccs, employeur_seulement=True
+                            ),
+                            commune_batch,
+                            headers,
+                            label="associations",
+                        )
+                    except Exception:
+                        logger.exception("Échec scan associations CJ batch=%s", cj_batch)
+                        continue
+
+                    logger.info(
+                        "Associations / %d commune(s) → %d établissement(s)",
+                        len(commune_batch),
+                        len(etabs),
+                    )
+                    n = _insert_etabs(etabs, communes=communes, nature_force="association")
+                    added_count += n
+                    added_associations += n
+                    time.sleep(0.2)
+
+        logger.info(
+            "Scan Sirene terminé — +%d (+%d mairies, +%d associations), %d requête(s), %d communes",
+            added_count,
+            added_mairies,
+            added_associations,
+            requests_sent,
+            len(communes),
+        )
 
     logger.info("Lancement du nettoyage automatique post-Sirene")
     clean_stats = clean_entreprises(apply_effectif_filter=True)

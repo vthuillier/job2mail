@@ -14,6 +14,7 @@ from jobtomail.services.contacts import run_contacts_scan
 from jobtomail.services.dirigeants import run_dirigeants_scan
 from jobtomail.services.frenchtech import run_frenchtech_scan
 from jobtomail.services.it_scope import mark_hors_champs_entreprises
+from jobtomail.services.naf_search import search_naf
 from jobtomail.services.ollama import ollama_available
 from jobtomail.services.prune import run_prune
 from jobtomail.services.serpapi import run_serpapi_scan
@@ -24,9 +25,20 @@ logger = logging.getLogger(__name__)
 bp = Blueprint("scans", __name__)
 
 
+@bp.route("/api/naf/search", methods=["GET"])
+def naf_search_route():
+    """Recherche de codes NAF par mot-clé (métier/secteur) — pour les
+    utilisateurs qui ne connaissent pas la nomenclature INSEE par cœur."""
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"ok": True, "results": []})
+    return jsonify({"ok": True, "results": search_naf(q)})
+
+
 @bp.route("/api/scan/sirene", methods=["POST"])
 def scan_sirene():
     data = request.get_json(force=True) or {}
+    national = bool(data.get("national", False))
     point_ref = data.get("point_ref") or "La Crau"
     rayon_km = float(data.get("rayon_km") or 20)
     depts = [d.strip() for d in str(data.get("departements") or "83, 13").split(",") if d.strip()]
@@ -52,18 +64,19 @@ def scan_sirene():
         return jsonify({"error": "Clé API INSEE (INSEE_TOKEN) manquante"}), 400
 
     logger.info(
-        "POST /api/scan/sirene — %s / %skm / %s NAF / depts=%s mairies=%s associations=%s",
+        "POST /api/scan/sirene — national=%s %s / %skm / %s NAF / depts=%s mairies=%s associations=%s",
+        national,
         point_ref,
         rayon_km,
         len(nafs),
-        depts,
+        len(depts) if national else depts,
         include_mairies,
         include_associations,
     )
 
     job_id = jobs.create_job(
         "sirene",
-        params={"point_ref": point_ref, "rayon_km": rayon_km, "departements": depts},
+        params={"point_ref": point_ref, "rayon_km": rayon_km, "departements": depts, "national": national},
     )
     jobs.submit_job(
         job_id,
@@ -75,6 +88,7 @@ def scan_sirene():
             insee_token=insee_token,
             include_mairies=include_mairies,
             include_associations=include_associations,
+            national=national,
         ),
         kind="sirene",
     )
