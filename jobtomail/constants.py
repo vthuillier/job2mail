@@ -22,10 +22,6 @@ DEFAULT_NAF_CODES = {
     "71.12B": "Ingénierie, études techniques",
 }
 
-# NAF reconnus comme « informatique / numérique » pour JobToMail
-IT_NAF_CODES = frozenset(DEFAULT_NAF_CODES.keys())
-IT_NAF_PREFIXES = ("62.", "63.11", "58.29", "71.12")
-
 # Catégories juridiques INSEE ciblées hors entreprises privées
 # https://www.insee.fr/fr/information/2028129
 MAIRIE_CATEGORIES_JURIDIQUES = {

@@ -7,7 +7,7 @@ import unicodedata
 from typing import Any
 
 from jobtomail import db
-from jobtomail.constants import FRENCHTECH_TECH_THEMES, IT_NAF_CODES, IT_NAF_PREFIXES
+from jobtomail.constants import FRENCHTECH_TECH_THEMES
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +18,12 @@ def _strip_accents(value: str) -> str:
 
 
 def is_it_naf(naf_code: str | None) -> bool:
-    """True si le code NAF est dans le périmètre informatique / numérique."""
+    """True si le code NAF fait partie des NAF configurés par l'utilisateur
+    (state.nafs — n'importe quel métier, pas seulement l'informatique)."""
     code = (naf_code or "").strip().upper().replace(" ", "")
     if not code:
         return False
-    if code in IT_NAF_CODES:
-        return True
-    return any(code.startswith(prefix) for prefix in IT_NAF_PREFIXES)
+    return code in db.load_nafs()
 
 
 def is_tech_theme(theme: str | None) -> bool:
