@@ -10,7 +10,8 @@ from flask import Blueprint, jsonify, request
 from jobtomail import db
 from jobtomail.db import env_or_config, get_entreprise
 from jobtomail.services.email_quality import assess_email
-from jobtomail.services.hunter import find_email
+from jobtomail.services.hunter import find_email as hunter_find_email
+from jobtomail.services.email_finder import find_email as find_email_smtp, FoundEmail
 from jobtomail.services.inbox import check_replies
 from jobtomail.services.mailer import mail_body, send_candidature_email, send_relance_email
 from jobtomail.services.ollama import generate_accroche, ollama_available
@@ -26,6 +27,46 @@ def _smtp_credentials(data: dict) -> tuple[str, str]:
     email_address = data.get("EMAIL_ADDRESS") or env_or_config("EMAIL_ADDRESS")
     email_password = data.get("EMAIL_PASSWORD") or env_or_config("EMAIL_PASSWORD")
     return email_address, email_password
+
+
+@bp.route("/api/manual/find-email", methods=["POST"])
+def find_email_manual():
+    data = request.get_json(force=True) or {}
+    domain = extract_domain(data.get("domain") or "")
+    prenom = (data.get("prenom") or "").strip()
+    nom = (data.get("nom") or "").strip()
+    siret = (data.get("siret") or "").strip()
+    
+    if not domain or not prenom or not nom:
+        logger.warning("Recherche email manuelle : paramètres incomplets")
+        return jsonify({"error": "Domaine, prénom et nom requis"}), 400
+
+    logger.info("POST /api/manual/find-email — domain=%s prenom=%s nom=%s", domain, prenom, nom)
+    email_data: FoundEmail = find_email_smtp(
+        domain=domain,
+        prenom=prenom,
+        nom=nom
+    )
+    logger.info("POST /api/manual/find-email — résultat=%s", email_data)
+
+    if email_data is None:
+        return jsonify({"ok": True, "data": None, "quality": None})
+    
+    quality = assess_email(email_data.email, company_domain=domain, hunter_score=email_data.score)
+    if siret and email_data.email:
+        db.apply_email_quality(
+            siret,
+            email=email_data.email,
+            hunter_score=email_data.score,
+            quality=quality["quality"],
+            note=quality["note"],
+        )
+        
+    return jsonify({"ok": True, "data": {
+        "email": email_data.email,
+        "status": email_data.status.name,
+        "score": email_data.score,
+    }, "quality": quality})
 
 
 @bp.route("/api/hunter/find-email", methods=["POST"])
@@ -45,7 +86,7 @@ def find_email_hunter():
         return jsonify({"error": "Domaine, prénom et nom requis"}), 400
 
     try:
-        email_data = find_email(
+        email_data = hunter_find_email(
             domain=domain,
             prenom=prenom,
             nom=nom,
