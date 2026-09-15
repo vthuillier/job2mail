@@ -9,6 +9,7 @@ from flask import Blueprint, jsonify, request
 
 from jobtomail import db
 from jobtomail.db import env_or_config, get_entreprise
+from jobtomail.routes.auth import current_user_id
 from jobtomail.services.email_quality import assess_email
 from jobtomail.services.hunter import find_email as hunter_find_email
 from jobtomail.services.email_finder import find_email as find_email_smtp, FoundEmail
@@ -55,6 +56,7 @@ def find_email_manual():
     quality = assess_email(email_data.email, company_domain=domain, hunter_score=email_data.score)
     if siret and email_data.email:
         db.apply_email_quality(
+            current_user_id(),
             siret,
             email=email_data.email,
             hunter_score=email_data.score,
@@ -106,6 +108,7 @@ def find_email_hunter():
     quality = assess_email(found, company_domain=domain, hunter_score=score_int)
     if siret and found:
         db.apply_email_quality(
+            current_user_id(),
             siret,
             email=found,
             hunter_score=score_int,
@@ -130,6 +133,7 @@ def assess_email_route():
     siret = (data.get("siret") or "").strip()
     if siret and email:
         db.apply_email_quality(
+            current_user_id(),
             siret,
             email=email,
             hunter_score=score_int,
@@ -150,7 +154,7 @@ def generate_accroche_route():
     poste = (data.get("poste") or "").strip()
 
     if siret:
-        ent = get_entreprise(siret)
+        ent = get_entreprise(current_user_id(), siret)
         if ent:
             denomination = denomination or (ent["denomination"] or "")
             commune = commune or (ent["commune"] or "")
@@ -174,7 +178,7 @@ def generate_accroche_route():
         return jsonify({"error": "Impossible de générer l'accroche", "ollama": True}), 500
 
     if siret:
-        db.update_entreprise(siret, {"accroche": text})
+        db.update_entreprise(current_user_id(), siret, {"accroche": text})
 
     return jsonify({"ok": True, "accroche": text})
 
@@ -201,6 +205,7 @@ def preview_mail_route():
 
 @bp.route("/api/send-email", methods=["POST"])
 def send_email_route():
+    user_id = current_user_id()
     data = request.get_json(force=True) or {}
     to_email = (data.get("email") or "").strip()
     nom = (data.get("nom") or "").strip()
@@ -225,7 +230,7 @@ def send_email_route():
     company_domain = ""
     hunter_score = None
     if siret:
-        ent = get_entreprise(siret)
+        ent = get_entreprise(user_id, siret)
         if ent:
             company_domain = ent["site_web"] or ""
             hunter_score = ent["email_hunter_score"] if "email_hunter_score" in ent.keys() else None
@@ -253,7 +258,7 @@ def send_email_route():
         }), 409
 
     if auto_accroche and not accroche and ollama_available() and siret:
-        ent = get_entreprise(siret)
+        ent = get_entreprise(user_id, siret)
         if ent:
             accroche = generate_accroche(
                 denomination=ent["denomination"] or denomination,
@@ -265,6 +270,7 @@ def send_email_route():
 
     try:
         result = send_candidature_email(
+            user_id,
             to_email=to_email,
             nom=nom,
             genre=genre,
@@ -282,6 +288,7 @@ def send_email_route():
 
     if siret:
         db.apply_email_quality(
+            user_id,
             siret,
             email=to_email,
             hunter_score=quality.get("hunter_score"),
@@ -294,6 +301,7 @@ def send_email_route():
 
 @bp.route("/api/send-relance", methods=["POST"])
 def send_relance_route():
+    user_id = current_user_id()
     data = request.get_json(force=True) or {}
     to_email = (data.get("email") or "").strip()
     nom = (data.get("nom") or "").strip()
@@ -314,7 +322,7 @@ def send_relance_route():
     if not siret:
         return jsonify({"error": "SIRET requis pour enregistrer la relance"}), 400
 
-    ent = get_entreprise(siret)
+    ent = get_entreprise(user_id, siret)
     if not ent:
         return jsonify({"error": "Entreprise introuvable"}), 404
 
@@ -335,6 +343,7 @@ def send_relance_route():
 
     try:
         result = send_relance_email(
+            user_id,
             to_email=to_email,
             nom=nom,
             genre=genre,
@@ -364,13 +373,13 @@ def send_relance_route():
 
 @bp.route("/api/relances/dues", methods=["GET"])
 def relances_dues_route():
-    dues = list_relances_dues()
+    dues = list_relances_dues(current_user_id())
     return jsonify({"ok": True, "count": len(dues), "relances": dues})
 
 
 @bp.route("/api/relances/status/<siret>", methods=["GET"])
 def relance_status_route(siret: str):
-    ent = get_entreprise(siret)
+    ent = get_entreprise(current_user_id(), siret)
     if not ent:
         return jsonify({"error": "Entreprise introuvable"}), 404
     return jsonify({"ok": True, "relance": relance_status(ent)})
@@ -394,7 +403,7 @@ def check_replies_route():
 
     logger.info("POST /api/check-replies — limit=%d", limit)
     try:
-        result = check_replies(email_address, email_password, limit=limit)
+        result = check_replies(current_user_id(), email_address, email_password, limit=limit)
     except imaplib.IMAP4.error as e:
         logger.exception("IMAP échoué")
         return jsonify({"error": f"Erreur IMAP : {e}"}), 500

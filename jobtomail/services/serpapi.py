@@ -275,12 +275,13 @@ def enrich_one(
 
 
 def run_serpapi_scan(
+    user_id: int,
     *,
     serpapi_key: str,
     sirets: list[str] | None = None,
     use_ollama: bool = True,
 ) -> dict[str, Any]:
-    to_scan = db.entreprises_to_serpapi(sirets)
+    to_scan = db.entreprises_to_serpapi(user_id, sirets)
     logger.info(
         "Scan SerpAPI — %d entreprise(s), ollama=%s",
         len(to_scan),
@@ -298,13 +299,13 @@ def run_serpapi_scan(
             site_found, linkedin_found = enrich_one(
                 denom, commune, serpapi_key, use_ollama=use_ollama
             )
-            db.mark_serpapi_result(siret, site_found, linkedin_found, scanned=True)
+            db.mark_serpapi_result(user_id, siret, site_found, linkedin_found, scanned=True)
             scanned_count += 1
             time.sleep(0.25)
         except Exception as e:
             logger.exception("Échec SerpAPI pour %s", denom)
             errors.append(f"{denom}: {e}")
-            db.mark_serpapi_scanned_only(siret)
+            db.mark_serpapi_scanned_only(user_id, siret)
 
     logger.info("Scan SerpAPI terminé — %d OK, %d erreur(s)", scanned_count, len(errors))
     return {"scanned": scanned_count, "errors": errors[:10]}

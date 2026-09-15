@@ -124,6 +124,7 @@ def _smtp_send(msg: EmailMessage, email_address: str, email_password: str) -> No
 
 
 def send_candidature_email(
+    user_id: int,
     *,
     to_email: str,
     nom: str,
@@ -177,6 +178,7 @@ def send_candidature_email(
 
     if siret:
         db.mark_email_sent(
+            user_id,
             siret,
             to_email,
             message_id=message_id,
@@ -184,12 +186,13 @@ def send_candidature_email(
             body=body,
         )
         if accroche:
-            db.update_entreprise(siret, {"accroche": accroche})
+            db.update_entreprise(user_id, siret, {"accroche": accroche})
 
     return {"message_id": message_id, "subject": subject, "body_preview": body[:280]}
 
 
 def send_relance_email(
+    user_id: int,
     *,
     to_email: str,
     nom: str,
@@ -204,7 +207,7 @@ def send_relance_email(
     original_subject: str | None = None,
     force: bool = False,
 ) -> dict[str, str]:
-    ent = db.get_entreprise(siret)
+    ent = db.get_entreprise(user_id, siret)
     if not ent:
         raise ValueError("Entreprise introuvable")
 
@@ -282,7 +285,7 @@ def send_relance_email(
         angle,
     )
 
-    db.mark_relance_sent(siret, message_id=message_id, body=body)
+    db.mark_relance_sent(user_id, siret, message_id=message_id, body=body)
 
     return {
         "message_id": message_id,

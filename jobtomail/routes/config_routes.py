@@ -20,6 +20,7 @@ from jobtomail.constants import (
     OLLAMA_MODEL,
 )
 from jobtomail import db, db_config
+from jobtomail.routes.auth import current_user_id
 from jobtomail.services.cv_profile import extract_cv_profile
 from jobtomail.services.ollama import ollama_available
 
@@ -98,7 +99,7 @@ def analyze_cv():
 @bp.route("/api/db/reset", methods=["POST"])
 def reset_db():
     logger.warning("POST /api/db/reset — vidage entreprises demandé")
-    count = db.reset_entreprises()
+    count = db.reset_entreprises(current_user_id())
     return jsonify({"ok": True, "deleted": count})
 
 

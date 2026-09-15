@@ -25,29 +25,73 @@ def test_schema_has_multi_tenant_columns(temp_db):
 
 def test_insert_get_update_delete_entreprise(temp_db):
     db.insert_entreprise(
+        1,
         {
             "siret": "33333333300001",
             "siren": "333333333",
             "denomination": "Test Corp",
             "adresse": "1 rue du Test",
             "commune": "Toulon",
-        }
+        },
     )
 
-    row = db.get_entreprise("33333333300001")
+    row = db.get_entreprise(1, "33333333300001")
     assert row is not None
     assert row["denomination"] == "Test Corp"
 
-    updated = db.update_entreprise("33333333300001", {"status": "postule"})
+    updated = db.update_entreprise(1, "33333333300001", {"status": "postule"})
     assert updated is True
-    assert db.get_entreprise("33333333300001")["status"] == "postule"
+    assert db.get_entreprise(1, "33333333300001")["status"] == "postule"
 
-    db.delete_entreprise("33333333300001")
-    assert db.get_entreprise("33333333300001") is None
+    db.delete_entreprise(1, "33333333300001")
+    assert db.get_entreprise(1, "33333333300001") is None
 
 
 def test_update_entreprise_unknown_siret_returns_false(temp_db):
-    assert db.update_entreprise("00000000000000", {"status": "postule"}) is False
+    assert db.update_entreprise(1, "00000000000000", {"status": "postule"}) is False
+
+
+def test_entreprise_crud_is_scoped_by_user(temp_db):
+    db.insert_entreprise(1, {
+        "siret": "33333333300001", "siren": "333333333",
+        "denomination": "Test Corp", "adresse": "1 rue du Test",
+        "commune": "Toulon",
+    })
+    db.insert_entreprise(2, {
+        "siret": "33333333300001", "siren": "333333333",
+        "denomination": "Autre Corp pour user 2", "adresse": "2 rue Autre",
+        "commune": "Nice",
+    })
+
+    row1 = db.get_entreprise(1, "33333333300001")
+    row2 = db.get_entreprise(2, "33333333300001")
+    assert row1["denomination"] == "Test Corp"
+    assert row2["denomination"] == "Autre Corp pour user 2"
+
+    assert db.update_entreprise(1, "33333333300001", {"status": "postule"}) is True
+    assert db.get_entreprise(1, "33333333300001")["status"] == "postule"
+    assert db.get_entreprise(2, "33333333300001")["status"] != "postule"
+
+    db.delete_entreprise(1, "33333333300001")
+    assert db.get_entreprise(1, "33333333300001") is None
+    assert db.get_entreprise(2, "33333333300001") is not None
+
+
+def test_list_entreprises_is_scoped_by_user(temp_db):
+    db.insert_entreprise(1, {"siret": "11111111100001", "denomination": "A", "adresse": "", "commune": ""})
+    db.insert_entreprise(2, {"siret": "22222222200001", "denomination": "B", "adresse": "", "commune": ""})
+
+    assert [r["siret"] for r in db.list_entreprises(1)] == ["11111111100001"]
+    assert [r["siret"] for r in db.list_entreprises(2)] == ["22222222200001"]
+
+
+def test_job_rows_are_scoped_by_user(temp_db):
+    db.create_job_row(1, "job-a", "scan_sirene")
+    db.create_job_row(2, "job-b", "scan_sirene")
+
+    assert db.get_job_row(1, "job-a") is not None
+    assert db.get_job_row(1, "job-b") is None
+    assert db.get_job_row(2, "job-b") is not None
 
 
 def test_config_get_set_roundtrip(temp_db):

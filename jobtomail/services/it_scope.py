@@ -65,12 +65,12 @@ def should_mark_hors_champs(row: dict[str, Any]) -> bool:
     return not is_in_it_scope(row)
 
 
-def mark_hors_champs_entreprises(*, sirets: list[str] | None = None) -> dict[str, Any]:
+def mark_hors_champs_entreprises(user_id: int, *, sirets: list[str] | None = None) -> dict[str, Any]:
     """
     Passe en hors_champs les entreprises hors périmètre IT (NAF ou thème).
     Ne modifie que le statut « à postuler ».
     """
-    rows = [dict(r) for r in db.list_entreprises()]
+    rows = [dict(r) for r in db.list_entreprises(user_id)]
     if sirets:
         wanted = set(sirets)
         rows = [r for r in rows if r["siret"] in wanted]
@@ -81,7 +81,7 @@ def mark_hors_champs_entreprises(*, sirets: list[str] | None = None) -> dict[str
         if not should_mark_hors_champs(row):
             skipped += 1
             continue
-        db.update_entreprise(row["siret"], {"status": "hors_champs"})
+        db.update_entreprise(user_id, row["siret"], {"status": "hors_champs"})
         marked += 1
         logger.info(
             "Hors champs — %s (NAF=%s, thème=%s)",

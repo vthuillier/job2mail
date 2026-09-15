@@ -24,6 +24,9 @@ def app(temp_db, monkeypatch):
     # setenv (pas delenv) : load_dotenv() dans create_app() re-remplirait une clé absente
     # depuis le .env local, ré-activant l'auth malgré l'isolation voulue par le test.
     monkeypatch.setenv("APP_PASSWORD", "")
+    # Même raison : un .env local (dépôt parent du worktree) peut contenir un vrai
+    # INSEE_TOKEN, faisant passer à tort le contrôle "clé manquante" dans les tests.
+    monkeypatch.setenv("INSEE_TOKEN", "")
     from jobtomail import create_app
 
     flask_app = create_app()

@@ -13,6 +13,23 @@ logger = logging.getLogger(__name__)
 
 bp = Blueprint("auth", __name__)
 
+# Utilisateur par défaut tant que l'authentification par utilisateur (avec
+# connexion Google / session["user_id"]) n'est pas câblée — voir le plan SaaS
+# multi-tenant. L'app ne connaît aujourd'hui qu'un mot de passe partagé
+# (APP_PASSWORD) ; toutes les requêtes se comportent donc comme le même
+# utilisateur "1" jusqu'à ce qu'une tâche ultérieure implémente la vraie
+# identité par session.
+DEFAULT_USER_ID = 1
+
+
+def current_user_id() -> int:
+    """ID de l'utilisateur courant pour le scoping multi-tenant.
+
+    NOTE (limite connue) : retombe sur DEFAULT_USER_ID tant que le login
+    par utilisateur n'existe pas — voir le commentaire ci-dessus.
+    """
+    return session.get("user_id", DEFAULT_USER_ID)
+
 # Verrouillage par IP après trop d'échecs (en mémoire — best-effort par worker).
 _MAX_ATTEMPTS = 5
 _LOCKOUT_SEC = 300

@@ -336,14 +336,14 @@ def _make_manual_siret() -> str:
     return "M" + uuid.uuid4().hex[:13].upper()
 
 
-def _find_existing_by_name(denomination: str, commune: str | None = None) -> Any | None:
+def _find_existing_by_name(user_id: int, denomination: str, commune: str | None = None) -> Any | None:
     target = _norm_name(denomination)
     if not target:
         return None
     commune_n = _norm_name(commune or "")
     best = None
     best_score = 0.0
-    for row in db.list_entreprises():
+    for row in db.list_entreprises(user_id):
         score = _name_similarity(denomination, row["denomination"] or "")
         if commune_n and row["commune"]:
             if _norm_name(row["commune"]) == commune_n:
@@ -435,8 +435,8 @@ def _row_from_scraped(
     return row
 
 
-def _enrich_existing(siret: str, card: dict[str, Any], email: str | None) -> None:
-    existing = db.get_entreprise(siret)
+def _enrich_existing(user_id: int, siret: str, card: dict[str, Any], email: str | None) -> None:
+    existing = db.get_entreprise(user_id, siret)
     if not existing:
         return
     fields: dict[str, Any] = {}
@@ -452,10 +452,11 @@ def _enrich_existing(siret: str, card: dict[str, Any], email: str | None) -> Non
         note += f" · {card['detail_url']}"
     fields["notes"] = _append_note(existing["notes"], note)
     if fields:
-        db.update_entreprise(siret, fields)
+        db.update_entreprise(user_id, siret, fields)
 
 
 def run_frenchtech_scan(
+    user_id: int,
     *,
     tech_only: bool = False,
     resolve_siret: bool = True,
@@ -495,16 +496,16 @@ def run_frenchtech_scan(
                 errors.append(f"{denom}: {e}")
 
         if resolved:
-            existing = db.get_entreprise(resolved["siret"])
+            existing = db.get_entreprise(user_id, resolved["siret"])
             if existing:
-                _enrich_existing(existing["siret"], card, email)
+                _enrich_existing(user_id, existing["siret"], card, email)
                 matched += 1
                 continue
         else:
             unresolved += 1
-            existing = _find_existing_by_name(denom, commune)
+            existing = _find_existing_by_name(user_id, denom, commune)
             if existing:
-                _enrich_existing(existing["siret"], card, email)
+                _enrich_existing(user_id, existing["siret"], card, email)
                 matched += 1
                 continue
 
@@ -516,13 +517,13 @@ def run_frenchtech_scan(
 
         try:
             # insert_entreprise gère site_web / notes ; ignore si collision rare
-            if db.get_entreprise(row["siret"]):
-                _enrich_existing(row["siret"], card, email)
+            if db.get_entreprise(user_id, row["siret"]):
+                _enrich_existing(user_id, row["siret"], card, email)
                 matched += 1
                 continue
-            db.insert_entreprise(row)
+            db.insert_entreprise(user_id, row)
             if email:
-                db.update_entreprise(row["siret"], {"contact_email": email})
+                db.update_entreprise(user_id, row["siret"], {"contact_email": email})
             added += 1
         except Exception as e:
             logger.exception("Insert échoué pour %s", denom)

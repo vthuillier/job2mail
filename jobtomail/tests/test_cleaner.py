@@ -68,6 +68,7 @@ def test_clean_entreprises_dedup_and_filter(temp_db):
     from jobtomail import db
 
     db.insert_entreprise_ignore(
+        1,
         {
             "siret": "11111111100001",
             "siren": "111111111",
@@ -75,9 +76,10 @@ def test_clean_entreprises_dedup_and_filter(temp_db):
             "effectif_code": "00",
             "nature": "entreprise",
             "date_creation": "2020-01-01",
-        }
+        },
     )
     db.insert_entreprise_ignore(
+        1,
         {
             "siret": "22222222200001",
             "siren": "222222222",
@@ -86,9 +88,10 @@ def test_clean_entreprises_dedup_and_filter(temp_db):
             "est_siege": True,
             "nature": "entreprise",
             "date_creation": "2010-01-01",
-        }
+        },
     )
     db.insert_entreprise_ignore(
+        1,
         {
             "siret": "22222222200002",
             "siren": "222222222",
@@ -97,13 +100,13 @@ def test_clean_entreprises_dedup_and_filter(temp_db):
             "est_siege": False,
             "nature": "entreprise",
             "date_creation": str(date.today()),
-        }
+        },
     )
 
-    result = clean_entreprises(apply_effectif_filter=True)
+    result = clean_entreprises(1, apply_effectif_filter=True)
 
     assert result["excluded_effectif"] == 1
     assert result["duplicates_removed"] == 1
-    remaining = db.list_entreprises()
+    remaining = db.list_entreprises(1)
     assert len(remaining) == 1
     assert remaining[0]["siret"] == "22222222200001"

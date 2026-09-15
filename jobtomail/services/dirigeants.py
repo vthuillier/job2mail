@@ -136,20 +136,21 @@ def fetch_dirigeants(siren: str) -> list[dict]:
 
 
 def enrich_entreprise_dirigeant(
+    user_id: int,
     *,
     siret: str,
     siren: str,
     force: bool = False,
 ) -> dict[str, Any]:
     """Remplit contact_prenom / nom / poste pour une entreprise."""
-    existing = db.get_entreprise(siret)
+    existing = db.get_entreprise(user_id, siret)
     if not existing:
         return {"siret": siret, "ok": False, "error": "introuvable"}
 
     if not force:
         if existing["contact_prenom"] or existing["contact_nom"]:
             if not existing["dirigeants_scanned"]:
-                db.mark_dirigeants_scanned(siret)
+                db.mark_dirigeants_scanned(user_id, siret)
             return {
                 "siret": siret,
                 "ok": True,
@@ -171,7 +172,7 @@ def enrich_entreprise_dirigeant(
         dirigeants = fetch_dirigeants(siren)
     except Exception as e:
         logger.exception("Échec fetch dirigeants SIREN=%s", siren)
-        db.mark_dirigeants_scanned(siret)
+        db.mark_dirigeants_scanned(user_id, siret)
         return {"siret": siret, "ok": False, "error": str(e)}
 
     picked = pick_best_dirigeant(dirigeants)
@@ -182,7 +183,7 @@ def enrich_entreprise_dirigeant(
             siren,
             len(dirigeants),
         )
-        db.mark_dirigeants_scanned(siret)
+        db.mark_dirigeants_scanned(user_id, siret)
         return {
             "siret": siret,
             "ok": True,
@@ -190,7 +191,7 @@ def enrich_entreprise_dirigeant(
             "dirigeants_count": len(dirigeants),
         }
 
-    db.apply_dirigeant(siret, picked)
+    db.apply_dirigeant(user_id, siret, picked)
     logger.info(
         "Dirigeant %s %s (%s) → %s",
         picked["contact_prenom"],
@@ -207,13 +208,14 @@ def enrich_entreprise_dirigeant(
 
 
 def run_dirigeants_scan(
+    user_id: int,
     *,
     sirets: list[str] | None = None,
     force: bool = False,
     limit: int | None = None,
 ) -> dict[str, Any]:
     """Enrichit en lot les entreprises sans contact (ou une liste de SIRET)."""
-    rows = db.entreprises_to_dirigeants(sirets=sirets, force=force)
+    rows = db.entreprises_to_dirigeants(user_id, sirets=sirets, force=force)
     if limit is not None:
         rows = rows[: max(0, limit)]
 
@@ -241,6 +243,7 @@ def run_dirigeants_scan(
             continue
 
         result = enrich_entreprise_dirigeant(
+            user_id,
             siret=row["siret"],
             siren=siren,
             force=force,

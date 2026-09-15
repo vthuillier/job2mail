@@ -260,6 +260,7 @@ def _etab_to_row(
 
 
 def _insert_etabs(
+    user_id: int,
     etabs: list[dict],
     *,
     communes: dict[str, CommuneInfo] | None = None,
@@ -294,13 +295,14 @@ def _insert_etabs(
         )
         if not row:
             continue
-        if db.insert_entreprise_ignore(row):
+        if db.insert_entreprise_ignore(user_id, row):
             added += 1
             logger.debug("Ajoutée : %s (%s) [%s]", row["denomination"], row["siret"], row["nature"])
     return added
 
 
 def run_sirene_scan(
+    user_id: int,
     *,
     point_ref: str,
     rayon_km: float,
@@ -359,7 +361,7 @@ def run_sirene_scan(
                     logger.exception("Échec recherche Sirene NAF batch=%s", naf_batch)
                     continue
                 logger.info("NAF %s → %d établissement(s) brut(s)", ",".join(naf_batch), len(etabs))
-                added_count += _insert_etabs(etabs, naf_labels=nafs, nature_force="entreprise")
+                added_count += _insert_etabs(user_id, etabs, naf_labels=nafs, nature_force="entreprise")
                 time.sleep(0.2)
 
         if include_mairies:
@@ -375,7 +377,7 @@ def run_sirene_scan(
                 logger.exception("Échec scan mairies")
                 etabs = []
             logger.info("Mairies (national) → %d établissement(s)", len(etabs))
-            n = _insert_etabs(etabs, nature_force="mairie")
+            n = _insert_etabs(user_id, etabs, nature_force="mairie")
             added_count += n
             added_mairies += n
 
@@ -393,7 +395,7 @@ def run_sirene_scan(
                     logger.exception("Échec scan associations CJ batch=%s", cj_batch)
                     continue
                 logger.info("Associations (national) CJ=%s → %d établissement(s)", ",".join(cj_batch), len(etabs))
-                n = _insert_etabs(etabs, nature_force="association")
+                n = _insert_etabs(user_id, etabs, nature_force="association")
                 added_count += n
                 added_associations += n
                 time.sleep(0.2)
@@ -438,6 +440,7 @@ def run_sirene_scan(
                         len(etabs),
                     )
                     added_count += _insert_etabs(
+                        user_id,
                         etabs,
                         communes=communes,
                         naf_labels=nafs,
@@ -464,7 +467,7 @@ def run_sirene_scan(
                     continue
 
                 logger.info("Mairies / %d commune(s) → %d établissement(s)", len(commune_batch), len(etabs))
-                n = _insert_etabs(etabs, communes=communes, nature_force="mairie")
+                n = _insert_etabs(user_id, etabs, communes=communes, nature_force="mairie")
                 added_count += n
                 added_mairies += n
                 time.sleep(0.2)
@@ -499,7 +502,7 @@ def run_sirene_scan(
                         len(commune_batch),
                         len(etabs),
                     )
-                    n = _insert_etabs(etabs, communes=communes, nature_force="association")
+                    n = _insert_etabs(user_id, etabs, communes=communes, nature_force="association")
                     added_count += n
                     added_associations += n
                     time.sleep(0.2)
@@ -514,7 +517,7 @@ def run_sirene_scan(
         )
 
     logger.info("Lancement du nettoyage automatique post-Sirene")
-    clean_stats = clean_entreprises(apply_effectif_filter=True)
+    clean_stats = clean_entreprises(user_id, apply_effectif_filter=True)
 
     return {
         "added": added_count,

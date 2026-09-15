@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request
 
 from jobtomail.constants import DEFAULT_NAF_CODES, OLLAMA_MODEL
 from jobtomail.db import env_or_config
+from jobtomail.routes.auth import current_user_id
 from jobtomail.services import jobs
 from jobtomail.services.cleaner import clean_entreprises
 from jobtomail.services.contacts import run_contacts_scan
@@ -74,13 +75,17 @@ def scan_sirene():
         include_associations,
     )
 
+    user_id = current_user_id()
     job_id = jobs.create_job(
+        user_id,
         "sirene",
         params={"point_ref": point_ref, "rayon_km": rayon_km, "departements": depts, "national": national},
     )
     jobs.submit_job(
+        user_id,
         job_id,
         lambda: run_sirene_scan(
+            user_id,
             point_ref=point_ref,
             rayon_km=rayon_km,
             departements=depts,
@@ -119,12 +124,15 @@ def scan_serpapi():
         ollama_available(),
         OLLAMA_MODEL,
     )
-    job_id = jobs.create_job("serpapi", params={"sirets": sirets})
+    user_id = current_user_id()
+    job_id = jobs.create_job(user_id, "serpapi", params={"sirets": sirets})
     jobs.submit_job(
+        user_id,
         job_id,
         lambda: {
             "ollama": ollama_available(),
             **run_serpapi_scan(
+                user_id,
                 serpapi_key=serpapi_key,
                 sirets=sirets or None,
                 use_ollama=bool(use_ollama),
@@ -151,6 +159,7 @@ def scan_serpapi_one(siret: str):
     logger.info("POST /api/scan/serpapi/%s — scan unitaire", siret)
     try:
         result = run_serpapi_scan(
+            current_user_id(),
             serpapi_key=serpapi_key,
             sirets=[siret],
             use_ollama=bool(use_ollama),
@@ -183,10 +192,12 @@ def scan_dirigeants():
         force,
         limit,
     )
-    job_id = jobs.create_job("dirigeants", params={"sirets": sirets, "force": force, "limit": limit})
+    user_id = current_user_id()
+    job_id = jobs.create_job(user_id, "dirigeants", params={"sirets": sirets, "force": force, "limit": limit})
     jobs.submit_job(
+        user_id,
         job_id,
-        lambda: run_dirigeants_scan(sirets=sirets or None, force=force, limit=limit),
+        lambda: run_dirigeants_scan(user_id, sirets=sirets or None, force=force, limit=limit),
         kind="dirigeants",
     )
     return jsonify({"job_id": job_id}), 202
@@ -199,7 +210,7 @@ def scan_dirigeants_one(siret: str):
     force = bool(data.get("force", True))
     logger.info("POST /api/scan/dirigeants/%s — force=%s", siret, force)
     try:
-        result = run_dirigeants_scan(sirets=[siret], force=force)
+        result = run_dirigeants_scan(current_user_id(), sirets=[siret], force=force)
     except Exception as e:
         logger.exception("Scan dirigeants unitaire échoué (%s)", siret)
         return jsonify({"error": str(e)}), 500
@@ -237,10 +248,13 @@ def scan_contacts():
         force,
         limit,
     )
-    job_id = jobs.create_job("contacts", params={"sirets": sirets, "force": force, "limit": limit})
+    user_id = current_user_id()
+    job_id = jobs.create_job(user_id, "contacts", params={"sirets": sirets, "force": force, "limit": limit})
     jobs.submit_job(
+        user_id,
         job_id,
         lambda: run_contacts_scan(
+            user_id,
             serpapi_key=serpapi_key,
             sirets=sirets or None,
             force=force,
@@ -265,6 +279,7 @@ def scan_contacts_one(siret: str):
         return jsonify({"error": "Clé SerpAPI manquante"}), 400
     try:
         result = run_contacts_scan(
+            current_user_id(),
             serpapi_key=serpapi_key,
             sirets=[siret],
             force=force,
@@ -298,10 +313,13 @@ def scan_frenchtech():
         resolve_siret,
         resolve_emails,
     )
-    job_id = jobs.create_job("frenchtech", params={"tech_only": tech_only})
+    user_id = current_user_id()
+    job_id = jobs.create_job(user_id, "frenchtech", params={"tech_only": tech_only})
     jobs.submit_job(
+        user_id,
         job_id,
         lambda: run_frenchtech_scan(
+            user_id,
             tech_only=tech_only,
             resolve_siret=bool(resolve_siret),
             resolve_emails=bool(resolve_emails),
@@ -322,7 +340,7 @@ def mark_hors_champs():
 
     logger.info("POST /api/mark-hors-champs — sirets=%s", sirets if sirets else "toutes à postuler")
     try:
-        result = mark_hors_champs_entreprises(sirets=sirets or None)
+        result = mark_hors_champs_entreprises(current_user_id(), sirets=sirets or None)
     except Exception as e:
         logger.exception("Marquage hors_champs échoué")
         return jsonify({"error": str(e)}), 500
@@ -336,7 +354,7 @@ def clean_data():
     apply_filter = data.get("apply_effectif_filter", True)
     logger.info("POST /api/clean — filtre_effectif=%s", apply_filter)
     try:
-        result = clean_entreprises(apply_effectif_filter=bool(apply_filter))
+        result = clean_entreprises(current_user_id(), apply_effectif_filter=bool(apply_filter))
     except Exception as e:
         logger.exception("Nettoyage échoué")
         return jsonify({"error": str(e)}), 500
@@ -377,12 +395,15 @@ def prune_entreprises():
         force_recompute,
         delete_unknown_employees,
     )
+    user_id = current_user_id()
     job_id = jobs.create_job(
-        "prune", params={"min_employees": min_employees, "max_travel_min": max_travel_min}
+        user_id, "prune", params={"min_employees": min_employees, "max_travel_min": max_travel_min}
     )
     jobs.submit_job(
+        user_id,
         job_id,
         lambda: run_prune(
+            user_id,
             min_employees=min_employees,
             max_travel_min=max_travel_min,
             origin=origin,
