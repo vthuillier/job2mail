@@ -18,6 +18,7 @@ from jobtomail.schema import (
     config as config_table,
     entreprises as entreprises_table,
     ix_entreprises_score_denom,
+    jobs as jobs_table,
     metadata,
     processed_replies as processed_replies_table,
 )
@@ -36,6 +37,7 @@ _COLUMN_ALTER_DEFAULTS = {
     "dirigeants_scanned": "0",
     "relance_count": "0",
     "travel_without_tolls": "0",
+    "user_id": "0",
 }
 
 
@@ -115,18 +117,19 @@ def init_db() -> None:
 
 def _migrate(engine: Engine) -> None:
     inspector = inspect(engine)
-    existing = {col["name"] for col in inspector.get_columns("entreprises")}
-    with engine.begin() as conn:
-        for col in entreprises_table.columns:
-            if col.name in existing:
-                continue
-            coltype = col.type.compile(dialect=engine.dialect)
-            ddl = f"ALTER TABLE entreprises ADD COLUMN {col.name} {coltype}"
-            default = _COLUMN_ALTER_DEFAULTS.get(col.name)
-            if default is not None:
-                ddl += f" DEFAULT {default}"
-            logger.info("Migration : ajout colonne entreprises.%s", col.name)
-            conn.exec_driver_sql(ddl)
+    for table in (entreprises_table, jobs_table, processed_replies_table):
+        existing = {col["name"] for col in inspector.get_columns(table.name)}
+        with engine.begin() as conn:
+            for col in table.columns:
+                if col.name in existing:
+                    continue
+                coltype = col.type.compile(dialect=engine.dialect)
+                ddl = f"ALTER TABLE {table.name} ADD COLUMN {col.name} {coltype}"
+                default = _COLUMN_ALTER_DEFAULTS.get(col.name)
+                if default is not None:
+                    ddl += f" DEFAULT {default}"
+                logger.info("Migration : ajout colonne %s.%s", table.name, col.name)
+                conn.exec_driver_sql(ddl)
     ix_entreprises_score_denom.create(engine, checkfirst=True)
 
 

@@ -5,6 +5,24 @@ import json
 from jobtomail import db
 
 
+def test_schema_has_multi_tenant_columns(temp_db):
+    from sqlalchemy import inspect
+    from jobtomail.db import get_engine
+
+    inspector = inspect(get_engine())
+    user_cols = {c["name"] for c in inspector.get_columns("users")}
+    assert {"id", "email", "google_sub", "created_at", "is_admin"} <= user_cols
+
+    entreprise_cols = {c["name"] for c in inspector.get_columns("entreprises")}
+    assert "user_id" in entreprise_cols
+
+    job_cols = {c["name"] for c in inspector.get_columns("jobs")}
+    assert "user_id" in job_cols
+
+    reply_cols = {c["name"] for c in inspector.get_columns("processed_replies")}
+    assert "user_id" in reply_cols
+
+
 def test_insert_get_update_delete_entreprise(temp_db):
     db.insert_entreprise(
         {
