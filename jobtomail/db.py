@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, create_engine, func, inspect, or_, select, text
+from sqlalchemy import and_, create_engine, event, func, inspect, or_, select, text
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
@@ -52,7 +52,15 @@ def get_engine() -> Engine:
     if _ENGINE is None:
         cfg = resolve_db_config()
         logger.info("Backend DB : %s (source=%s)", cfg.backend, cfg.source)
-        _ENGINE = create_engine(cfg.url(), future=True)
+        connect_args = {"timeout": 30} if cfg.backend == "sqlite" else {}
+        _ENGINE = create_engine(cfg.url(), future=True, connect_args=connect_args)
+        if cfg.backend == "sqlite":
+            @event.listens_for(_ENGINE, "connect")
+            def _set_sqlite_pragma(dbapi_conn, _record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.close()
     return _ENGINE
 
 
