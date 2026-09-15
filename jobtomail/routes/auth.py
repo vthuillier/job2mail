@@ -10,6 +10,7 @@ import time
 from flask import Blueprint, redirect, render_template, request, session, url_for
 
 from jobtomail import db
+from jobtomail.services import magic_link
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,13 @@ def _register_success(ip: str) -> None:
     _locked_until.pop(ip, None)
 
 
+def send_magic_link_email(to_email: str, link: str) -> None:
+    # Placeholder until Task 6 wires transactional sending through a real
+    # provider. Logs the link so magic-link login is testable end-to-end
+    # in dev without an email provider configured yet.
+    logger.info("Lien magique pour %s : %s", to_email, link)
+
+
 def _ensure_default_user() -> int:
     """Garantit qu'une vraie ligne `users` existe pour l'utilisateur par défaut
     (mot de passe partagé, Phase 1) et renvoie son id.
@@ -124,6 +132,43 @@ def login():
             error = "Mot de passe incorrect."
 
     return render_template("login.html", error=error)
+
+
+@bp.route("/auth/magic", methods=["POST"])
+def request_magic_link():
+    email = (request.form.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return render_template("login.html", error="Adresse email invalide.")
+    ip = _client_ip()
+    if _is_locked(ip):
+        return render_template("login.html", error="Trop de tentatives, réessaie dans 5 minutes.")
+    token = magic_link.generate_token(email)
+    link = url_for("auth.consume_magic_link", token=token, _external=True)
+    send_magic_link_email(email, link)
+    # Reuse the password-login lockout counters as a generic per-IP rate
+    # limiter for magic-link requests too, so an IP can't spam link
+    # requests indefinitely; a successful login (_register_success) clears
+    # the counter.
+    _register_failure(ip)
+    return render_template("login.html", sent=True)
+
+
+@bp.route("/auth/magic/<token>")
+def consume_magic_link(token: str):
+    email = magic_link.verify_token(token)
+    if not email:
+        return render_template("login.html", error="Lien invalide ou expiré, redemande-en un.")
+    user = db.get_user_by_email(email)
+    user_id = user["id"] if user else db.create_user(email)
+    session.clear()
+    session["user_id"] = user_id
+    session["authenticated"] = True
+    session.permanent = True
+    _register_success(_client_ip())
+    next_url = request.args.get("next") or url_for("main.index")
+    if not next_url.startswith("/"):
+        next_url = url_for("main.index")
+    return redirect(next_url)
 
 
 @bp.route("/logout", methods=["POST", "GET"])

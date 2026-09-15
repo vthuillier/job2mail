@@ -134,22 +134,92 @@
     font-size: 0.88rem;
     font-weight: 500;
   }
+
+  .success {
+    margin-bottom: 16px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--teal-dim);
+    color: var(--teal);
+    font-size: 0.88rem;
+    font-weight: 500;
+  }
+
+  input[type="email"] {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: #121820;
+    color: var(--text);
+    font: inherit;
+    font-size: 1rem;
+    outline: none;
+  }
+
+  input[type="email"]:focus {
+    border-color: var(--teal);
+    box-shadow: 0 0 0 3px var(--teal-dim);
+  }
+
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 26px 0;
+    color: var(--muted);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .divider::before,
+  .divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  button.secondary {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  button.secondary:hover { filter: none; border-color: var(--teal); }
 </style>
 </head>
 <body>
-  <form class="card" method="post" autocomplete="current-password">
+  <div class="card">
     <div class="brand">
       <div class="brand-mark">J2M</div>
       <strong>JobToMail</strong>
     </div>
     <h1>Accès protégé</h1>
-    <p class="hint">Saisis le mot de passe pour continuer.</p>
+
     {% if error %}
     <div class="error">{{ error }}</div>
     {% endif %}
-    <label for="password">Mot de passe</label>
-    <input id="password" name="password" type="password" required autofocus>
-    <button type="submit">Se connecter</button>
-  </form>
+    {% if sent %}
+    <div class="success">Si cette adresse existe, un lien de connexion vient de t'être envoyé par email.</div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('auth.request_magic_link') }}" autocomplete="email">
+      <p class="hint">Reçois un lien de connexion par email, sans mot de passe.</p>
+      <label for="email">Adresse email</label>
+      <input id="email" name="email" type="email" required autofocus>
+      <button type="submit">Envoie-moi un lien de connexion</button>
+    </form>
+
+    <div class="divider">ou</div>
+
+    <form method="post" action="{{ url_for('auth.login') }}" autocomplete="current-password">
+      <p class="hint">Saisis le mot de passe pour continuer.</p>
+      <label for="password">Mot de passe</label>
+      <input id="password" name="password" type="password" required>
+      <button class="secondary" type="submit">Se connecter</button>
+    </form>
+  </div>
 </body>
 </html>
