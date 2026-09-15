@@ -7,7 +7,7 @@ import logging
 from flask import Blueprint, jsonify, request
 
 from jobtomail.constants import DEFAULT_NAF_CODES, OLLAMA_MODEL
-from jobtomail.db import env_or_user_config
+from jobtomail.db import env_or_config, env_or_user_config
 from jobtomail.routes.auth import current_user_id
 from jobtomail.services import jobs
 from jobtomail.services.cleaner import clean_entreprises
@@ -59,7 +59,9 @@ def scan_sirene():
     else:
         include_associations = bool(include_associations)
 
-    insee_token = data.get("INSEE_TOKEN") or env_or_user_config(current_user_id(), "INSEE_TOKEN")
+    # INSEE_TOKEN : variable d'environnement globale côté serveur (fournie par
+    # l'exploitant), jamais lue depuis la config par utilisateur.
+    insee_token = data.get("INSEE_TOKEN") or env_or_config("INSEE_TOKEN")
     if not insee_token:
         logger.error("Scan Sirene refusé : INSEE_TOKEN manquant")
         return jsonify({"error": "Clé API INSEE (INSEE_TOKEN) manquante"}), 400

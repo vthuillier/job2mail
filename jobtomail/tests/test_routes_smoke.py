@@ -15,11 +15,15 @@ def test_get_config_defaults(client):
     assert data["needs_setup"] is True
 
 
-def test_post_then_get_config_roundtrip(client):
+def test_post_then_get_config_roundtrip(client, monkeypatch):
+    # INSEE_TOKEN reste une variable d'environnement globale côté serveur
+    # (jamais stockée par utilisateur) — on la fournit via l'environnement
+    # pour que needs_setup passe à False une fois les autres champs remplis.
+    monkeypatch.setenv("INSEE_TOKEN", "dummy-token")
     payload = {
         "candidate_name": "Jean Dupont",
         "EMAIL_ADDRESS": "jean@example.com",
-        "INSEE_TOKEN": "dummy-token",
+        "INSEE_TOKEN": "user-supplied-token-should-be-ignored",
     }
     post_res = client.post("/api/config", json=payload)
     assert post_res.status_code == 200
@@ -27,7 +31,19 @@ def test_post_then_get_config_roundtrip(client):
     get_res = client.get("/api/config")
     data = get_res.get_json()
     assert data["candidate_name"] == "Jean Dupont"
+    # Le token posté par le client ne doit jamais être persisté ni utilisé —
+    # seule la variable d'environnement compte.
+    assert data["INSEE_TOKEN"] == "dummy-token"
     assert data["needs_setup"] is False
+
+
+def test_post_config_never_persists_insee_token(client):
+    """INSEE_TOKEN : reste une variable d'environnement globale côté serveur,
+    jamais exposée/persistée pour l'utilisateur (design spec §3)."""
+    client.post("/api/config", json={"INSEE_TOKEN": "attacker-or-user-supplied"})
+    res = client.get("/api/config")
+    assert res.status_code == 200
+    assert res.get_json()["INSEE_TOKEN"] == ""
 
 
 def test_post_config_rejects_internal_keys(client):
