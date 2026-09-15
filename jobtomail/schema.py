@@ -118,6 +118,14 @@ processed_replies = Table(
     Column("processed_at", Text),
 )
 
+user_google_tokens = Table(
+    "user_google_tokens",
+    metadata,
+    Column("user_id", Integer, primary_key=True),
+    Column("refresh_token_encrypted", Text, nullable=False),
+    Column("updated_at", Text),
+)
+
 jobs = Table(
     "jobs",
     metadata,

@@ -22,6 +22,7 @@ from jobtomail.schema import (
     metadata,
     processed_replies as processed_replies_table,
     user_config as user_config_table,
+    user_google_tokens as user_google_tokens_table,
     users as users_table,
 )
 
@@ -159,6 +160,33 @@ def create_user(email: str, google_sub: str | None = None, is_admin: bool = Fals
             )
         )
     return result.inserted_primary_key[0]
+
+
+def save_google_refresh_token(user_id: int, refresh_token: str) -> None:
+    """Chiffre puis persiste le refresh token Google de l'utilisateur (upsert)."""
+    from jobtomail.services.crypto import encrypt
+
+    encrypted = encrypt(refresh_token)
+    with get_engine().begin() as conn:
+        _insert_replace(
+            conn,
+            user_google_tokens_table,
+            {"user_id": user_id, "refresh_token_encrypted": encrypted, "updated_at": _now()},
+            pk_col="user_id",
+        )
+
+
+def get_google_refresh_token(user_id: int) -> str | None:
+    """Déchiffre et renvoie le refresh token Google de l'utilisateur, ou None."""
+    from jobtomail.services.crypto import decrypt
+
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            select(user_google_tokens_table.c.refresh_token_encrypted).where(
+                user_google_tokens_table.c.user_id == user_id
+            )
+        ).first()
+    return decrypt(row[0]) if row else None
 
 
 def create_job_row(user_id: int, job_id: str, kind: str, params: dict[str, Any] | None = None) -> None:
