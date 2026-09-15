@@ -21,6 +21,7 @@ from jobtomail.schema import (
     jobs as jobs_table,
     metadata,
     processed_replies as processed_replies_table,
+    user_config as user_config_table,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,16 +90,21 @@ def _insert_ignore(conn, table, values: dict[str, Any]) -> bool:
     return result.rowcount > 0
 
 
-def _insert_replace(conn, table, values: dict[str, Any], pk_col: str) -> None:
-    """Upsert : insère, ou met à jour si la clé primaire existe déjà."""
-    update_cols = {k: v for k, v in values.items() if k != pk_col}
+def _insert_replace(conn, table, values: dict[str, Any], pk_col: str | list[str]) -> None:
+    """Upsert : insère, ou met à jour si la clé primaire existe déjà.
+
+    `pk_col` accepte une seule colonne (str) ou une liste de colonnes pour
+    les clés primaires composites (ex : `user_config` avec user_id + key).
+    """
+    pk_cols = pk_col if isinstance(pk_col, list) else [pk_col]
+    update_cols = {k: v for k, v in values.items() if k not in pk_cols}
     dialect = conn.engine.dialect.name
     if dialect == "sqlite":
         stmt = sqlite.insert(table).values(**values)
-        stmt = stmt.on_conflict_do_update(index_elements=[pk_col], set_=update_cols)
+        stmt = stmt.on_conflict_do_update(index_elements=pk_cols, set_=update_cols)
     elif dialect == "postgresql":
         stmt = postgresql.insert(table).values(**values)
-        stmt = stmt.on_conflict_do_update(index_elements=[pk_col], set_=update_cols)
+        stmt = stmt.on_conflict_do_update(index_elements=pk_cols, set_=update_cols)
     elif dialect == "mysql":
         stmt = mysql.insert(table).values(**values)
         stmt = stmt.on_duplicate_key_update(**update_cols)
@@ -1066,6 +1072,39 @@ def get_all_config() -> dict[str, str]:
     return {row["key"]: row["value"] for row in rows}
 
 
+def get_user_config_value(user_id: int, key: str, default: str = "") -> str:
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            select(user_config_table.c.value).where(
+                and_(user_config_table.c.user_id == user_id, user_config_table.c.key == key)
+            )
+        ).first()
+    return row[0] if row else default
+
+
+def set_user_config_values(user_id: int, data: dict[str, Any]) -> None:
+    with get_engine().begin() as conn:
+        for key, value in data.items():
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False)
+            _insert_replace(
+                conn, user_config_table,
+                {"user_id": user_id, "key": key, "value": str(value) if value is not None else ""},
+                pk_col=["user_id", "key"],
+            )
+    logger.info("Config utilisateur mise à jour (user_id=%s, %d clé(s)) : %s", user_id, len(data), ", ".join(data.keys()))
+
+
+def get_all_user_config(user_id: int) -> dict[str, str]:
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            select(user_config_table.c.key, user_config_table.c.value).where(
+                user_config_table.c.user_id == user_id
+            )
+        ).all()
+    return {k: v for k, v in rows}
+
+
 def env_or_config(key: str, *aliases: str) -> str:
     """Lit d'abord .env, puis la config DB (avec alias éventuels)."""
     import os
@@ -1076,6 +1115,21 @@ def env_or_config(key: str, *aliases: str) -> str:
             return val.strip()
     for name in (key, *aliases):
         val = get_config_value(name)
+        if val:
+            return val.strip()
+    return ""
+
+
+def env_or_user_config(user_id: int, key: str, *aliases: str) -> str:
+    """Comme `env_or_config`, mais lit la config par utilisateur (`user_config`)."""
+    import os
+
+    for name in (key, *aliases):
+        val = os.getenv(name)
+        if val:
+            return val.strip()
+    for name in (key, *aliases):
+        val = get_user_config_value(user_id, name)
         if val:
             return val.strip()
     return ""

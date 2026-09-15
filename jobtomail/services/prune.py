@@ -56,7 +56,7 @@ def run_prune(
        puis supprime celles au-delà de max_travel_min.
     """
     t_start = time.monotonic()
-    origin_label = (origin or db.get_config_value("point_ref", "La Crau") or "La Crau").strip()
+    origin_label = (origin or db.get_user_config_value(user_id, "point_ref", "La Crau") or "La Crau").strip()
     origin_norm = normalize_location_label(origin_label)
 
     logger.info(

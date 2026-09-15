@@ -324,7 +324,8 @@ def run_sirene_scan(
         include_associations,
     )
 
-    db.set_config_values(
+    db.set_user_config_values(
+        user_id,
         {
             "point_ref": "France entière" if national else point_ref,
             "rayon_km": "0" if national else str(rayon_km),
@@ -332,7 +333,7 @@ def run_sirene_scan(
             "nafs": nafs,
             "scan_mairies": "1" if include_mairies else "0",
             "scan_associations": "1" if include_associations else "0",
-        }
+        },
     )
 
     headers = {"X-INSEE-Api-Key-Integration": insee_token}

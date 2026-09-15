@@ -40,10 +40,10 @@ def api_config():
         data = request.get_json(force=True) or {}
         data = {k: v for k, v in data.items() if not k.startswith("_")}
         logger.info("POST /api/config — clés reçues : %s", list(data.keys()))
-        db.set_config_values(data)
+        db.set_user_config_values(current_user_id(), data)
         return jsonify({"ok": True})
 
-    cfg = db.get_all_config()
+    cfg = db.get_all_user_config(current_user_id())
     nafs = db.load_nafs(cfg)
     logger.debug("GET /api/config — %d clé(s) SQLite, %d NAF", len(cfg), len(nafs))
 
@@ -90,7 +90,7 @@ def api_config():
 def analyze_cv():
     data = request.get_json(silent=True) or {}
     force = bool(data.get("force", True))
-    profile = extract_cv_profile(force=force)
+    profile = extract_cv_profile(current_user_id(), force=force)
     if profile is None:
         return jsonify({"error": "cv.pdf introuvable — place le fichier à la racine du projet"}), 400
     return jsonify(profile)

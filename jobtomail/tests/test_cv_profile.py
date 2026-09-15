@@ -47,7 +47,7 @@ def test_extract_keywords_heuristic_no_match():
 
 def test_extract_cv_profile_missing_file_returns_none(temp_db, monkeypatch):
     monkeypatch.setattr(cv_profile, "CV_PATH", cv_profile.CV_PATH.parent / "does-not-exist.pdf")
-    assert cv_profile.extract_cv_profile() is None
+    assert cv_profile.extract_cv_profile(1) is None
 
 
 def test_extract_cv_profile_caches_by_mtime(temp_db, monkeypatch, tmp_path):
@@ -64,11 +64,11 @@ def test_extract_cv_profile_caches_by_mtime(temp_db, monkeypatch, tmp_path):
     monkeypatch.setattr(cv_profile, "extract_cv_text", fake_extract_text)
     monkeypatch.setattr(cv_profile, "extract_cv_keywords_ollama", lambda text: None)
 
-    first = cv_profile.extract_cv_profile()
+    first = cv_profile.extract_cv_profile(1)
     assert first["source"] == "heuristic"
     assert calls["n"] == 1
 
-    second = cv_profile.extract_cv_profile()
+    second = cv_profile.extract_cv_profile(1)
     assert second == first
     assert calls["n"] == 1  # pas de ré-extraction, même mtime
 
@@ -77,7 +77,7 @@ def test_extract_cv_profile_caches_by_mtime(temp_db, monkeypatch, tmp_path):
 
     time.sleep(0.01)
     os.utime(pdf_path, None)  # change mtime
-    third = cv_profile.extract_cv_profile()
+    third = cv_profile.extract_cv_profile(1)
     assert calls["n"] == 2
 
 
@@ -88,7 +88,7 @@ def test_extract_cv_profile_force_bypasses_cache(temp_db, monkeypatch, tmp_path)
     monkeypatch.setattr(cv_profile, "extract_cv_text", lambda path=None: "python")
     monkeypatch.setattr(cv_profile, "extract_cv_keywords_ollama", lambda text: None)
 
-    cv_profile.extract_cv_profile()
+    cv_profile.extract_cv_profile(1)
     calls = {"n": 0}
 
     def fake_extract_text(path=None):
@@ -96,5 +96,5 @@ def test_extract_cv_profile_force_bypasses_cache(temp_db, monkeypatch, tmp_path)
         return "python"
 
     monkeypatch.setattr(cv_profile, "extract_cv_text", fake_extract_text)
-    cv_profile.extract_cv_profile(force=True)
+    cv_profile.extract_cv_profile(1, force=True)
     assert calls["n"] == 1

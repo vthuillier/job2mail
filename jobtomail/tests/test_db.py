@@ -136,3 +136,13 @@ def test_load_nafs_invalid_json_falls_back(temp_db):
 
     cfg = {"nafs": "not json"}
     assert db.load_nafs(cfg) == dict(DEFAULT_NAF_CODES)
+
+
+def test_user_config_roundtrip_is_scoped(temp_db):
+    db.set_user_config_values(1, {"candidate_name": "Jean Dupont"})
+    db.set_user_config_values(2, {"candidate_name": "Marie Curie"})
+
+    assert db.get_user_config_value(1, "candidate_name") == "Jean Dupont"
+    assert db.get_user_config_value(2, "candidate_name") == "Marie Curie"
+    assert db.get_user_config_value(1, "missing_key", "default") == "default"
+    assert db.get_all_user_config(1)["candidate_name"] == "Jean Dupont"

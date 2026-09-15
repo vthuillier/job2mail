@@ -8,7 +8,7 @@ import logging
 from flask import Blueprint, jsonify, request
 
 from jobtomail import db
-from jobtomail.db import env_or_config, get_entreprise
+from jobtomail.db import env_or_user_config, get_entreprise
 from jobtomail.routes.auth import current_user_id
 from jobtomail.services.email_quality import assess_email
 from jobtomail.services.hunter import find_email as hunter_find_email
@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 bp = Blueprint("email", __name__)
 
 
-def _smtp_credentials(data: dict) -> tuple[str, str]:
-    email_address = data.get("EMAIL_ADDRESS") or env_or_config("EMAIL_ADDRESS")
-    email_password = data.get("EMAIL_PASSWORD") or env_or_config("EMAIL_PASSWORD")
+def _smtp_credentials(user_id: int, data: dict) -> tuple[str, str]:
+    email_address = data.get("EMAIL_ADDRESS") or env_or_user_config(user_id, "EMAIL_ADDRESS")
+    email_password = data.get("EMAIL_PASSWORD") or env_or_user_config(user_id, "EMAIL_PASSWORD")
     return email_address, email_password
 
 
@@ -78,7 +78,7 @@ def find_email_hunter():
     prenom = (data.get("prenom") or "").strip()
     nom = (data.get("nom") or "").strip()
     siret = (data.get("siret") or "").strip()
-    hunter_key = data.get("TOKEN_HUNTER_IO") or env_or_config("TOKEN_HUNTER_IO")
+    hunter_key = data.get("TOKEN_HUNTER_IO") or env_or_user_config(current_user_id(), "TOKEN_HUNTER_IO")
 
     if not hunter_key:
         logger.error("Hunter.io refusé : TOKEN manquant")
@@ -195,6 +195,7 @@ def preview_mail_route():
     body = mail_body(
         nom,
         genre,
+        user_id=current_user_id(),
         prenom=prenom,
         denomination=denomination,
         poste=poste,
@@ -218,7 +219,7 @@ def send_email_route():
     force = bool(data.get("force", False))
     auto_accroche = bool(data.get("auto_accroche", True))
 
-    email_address, email_password = _smtp_credentials(data)
+    email_address, email_password = _smtp_credentials(user_id, data)
 
     if not email_address or not email_password:
         logger.error("Envoi mail refusé : identifiants SMTP manquants")
@@ -312,7 +313,7 @@ def send_relance_route():
     poste = (data.get("poste") or "").strip()
     force = bool(data.get("force", False))
 
-    email_address, email_password = _smtp_credentials(data)
+    email_address, email_password = _smtp_credentials(user_id, data)
 
     if not email_address or not email_password:
         logger.error("Relance refusée : identifiants SMTP manquants")
@@ -393,7 +394,7 @@ def check_replies_route():
     et met à jour le statut des entreprises concernées.
     """
     data = request.get_json(force=True) or {}
-    email_address, email_password = _smtp_credentials(data)
+    email_address, email_password = _smtp_credentials(current_user_id(), data)
 
     if not email_address or not email_password:
         return jsonify({"error": "EMAIL_ADDRESS / EMAIL_PASSWORD manquants"}), 400

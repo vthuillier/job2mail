@@ -184,7 +184,7 @@ def clean_entreprises(user_id: int, *, apply_effectif_filter: bool = True) -> di
     try:
         from jobtomail.services.cv_profile import extract_cv_profile
 
-        profile = extract_cv_profile()
+        profile = extract_cv_profile(user_id)
         cv_keywords = profile["keywords"] if profile else None
     except Exception:
         logger.exception("Extraction profil CV indisponible — scoring sans mots-clés")

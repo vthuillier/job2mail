@@ -7,7 +7,7 @@ import logging
 from flask import Blueprint, jsonify, request
 
 from jobtomail.constants import DEFAULT_NAF_CODES, OLLAMA_MODEL
-from jobtomail.db import env_or_config
+from jobtomail.db import env_or_user_config
 from jobtomail.routes.auth import current_user_id
 from jobtomail.services import jobs
 from jobtomail.services.cleaner import clean_entreprises
@@ -59,7 +59,7 @@ def scan_sirene():
     else:
         include_associations = bool(include_associations)
 
-    insee_token = data.get("INSEE_TOKEN") or env_or_config("INSEE_TOKEN")
+    insee_token = data.get("INSEE_TOKEN") or env_or_user_config(current_user_id(), "INSEE_TOKEN")
     if not insee_token:
         logger.error("Scan Sirene refusé : INSEE_TOKEN manquant")
         return jsonify({"error": "Clé API INSEE (INSEE_TOKEN) manquante"}), 400
@@ -110,7 +110,7 @@ def scan_serpapi():
     serpapi_key = (
         data.get("SERPAPI_KEY")
         or data.get("SERPAPI_TOKEN")
-        or env_or_config("SERPAPI_KEY", "SERPAPI_TOKEN")
+        or env_or_user_config(current_user_id(), "SERPAPI_KEY", "SERPAPI_TOKEN")
     )
     if not serpapi_key:
         logger.error("Scan SerpAPI refusé : clé manquante")
@@ -150,7 +150,7 @@ def scan_serpapi_one(siret: str):
     serpapi_key = (
         data.get("SERPAPI_KEY")
         or data.get("SERPAPI_TOKEN")
-        or env_or_config("SERPAPI_KEY", "SERPAPI_TOKEN")
+        or env_or_user_config(current_user_id(), "SERPAPI_KEY", "SERPAPI_TOKEN")
     )
     if not serpapi_key:
         return jsonify({"error": "Clé SerpAPI (SERPAPI_KEY / SERPAPI_TOKEN) manquante"}), 400
@@ -236,7 +236,7 @@ def scan_contacts():
     serpapi_key = (
         data.get("SERPAPI_KEY")
         or data.get("SERPAPI_TOKEN")
-        or env_or_config("SERPAPI_KEY", "SERPAPI_TOKEN")
+        or env_or_user_config(current_user_id(), "SERPAPI_KEY", "SERPAPI_TOKEN")
     )
     if not serpapi_key:
         return jsonify({"error": "Clé SerpAPI (SERPAPI_KEY / SERPAPI_TOKEN) manquante"}), 400
@@ -273,7 +273,7 @@ def scan_contacts_one(siret: str):
     serpapi_key = (
         data.get("SERPAPI_KEY")
         or data.get("SERPAPI_TOKEN")
-        or env_or_config("SERPAPI_KEY", "SERPAPI_TOKEN")
+        or env_or_user_config(current_user_id(), "SERPAPI_KEY", "SERPAPI_TOKEN")
     )
     if not serpapi_key:
         return jsonify({"error": "Clé SerpAPI manquante"}), 400

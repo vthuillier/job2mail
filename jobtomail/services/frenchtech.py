@@ -368,6 +368,7 @@ def _row_from_scraped(
     *,
     resolved: dict[str, Any] | None,
     email: str | None,
+    user_id: int,
 ) -> dict[str, Any]:
     adresse_raw = card.get("adresse")
     adresse, commune, cp = _parse_adresse(adresse_raw)
@@ -426,7 +427,7 @@ def _row_from_scraped(
         "site_web": card.get("site_web"),
         "linkedin_company": None,
         "notes": note,
-        "status": "hors_champs" if not is_in_it_scope({"nature": "entreprise", "naf_code": naf_code, "naf_libelle": theme}) else "a_postuler",
+        "status": "hors_champs" if not is_in_it_scope({"nature": "entreprise", "naf_code": naf_code, "naf_libelle": theme}, user_id) else "a_postuler",
         "contact_email": email,
     }
     row["score_pertinence"] = score_pertinence(row)
@@ -509,7 +510,7 @@ def run_frenchtech_scan(
                 matched += 1
                 continue
 
-        row = _row_from_scraped(card, resolved=resolved, email=email)
+        row = _row_from_scraped(card, resolved=resolved, email=email, user_id=user_id)
         if geocode and (row.get("latitude") is None) and (row.get("adresse") or row.get("commune")):
             coords = geocode_adresse(row.get("adresse"), row.get("commune"))
             if coords:

@@ -24,6 +24,14 @@ config = Table(
     Column("value", Text),
 )
 
+user_config = Table(
+    "user_config",
+    metadata,
+    Column("user_id", Integer, primary_key=True),
+    Column("key", String(255), primary_key=True),
+    Column("value", Text),
+)
+
 users = Table(
     "users",
     metadata,

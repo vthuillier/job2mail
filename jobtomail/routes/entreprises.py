@@ -65,7 +65,11 @@ def _pdf_slug(name: str | None) -> str:
 
 def _current_travel_origin(payload: dict | None = None) -> str:
     payload = payload or {}
-    return (payload.get("origin") or db.get_config_value("point_ref", "La Crau") or "La Crau").strip()
+    return (
+        payload.get("origin")
+        or db.get_user_config_value(current_user_id(), "point_ref", "La Crau")
+        or "La Crau"
+    ).strip()
 
 
 def _to_float(raw: str | None) -> float | None:

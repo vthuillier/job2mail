@@ -36,13 +36,13 @@ def _render_template(template: str, **kwargs: str) -> str:
     return result.strip() + "\n"
 
 
-def _cv_attachment_filename() -> str:
-    name = (db.get_all_config().get("candidate_name") or "").strip()
+def _cv_attachment_filename(user_id: int) -> str:
+    name = (db.get_user_config_value(user_id, "candidate_name") or "").strip()
     return f"CV - {name}.pdf" if name else "CV.pdf"
 
 
-def get_mail_templates() -> dict[str, str]:
-    cfg = db.get_all_config()
+def get_mail_templates(user_id: int) -> dict[str, str]:
+    cfg = db.get_all_user_config(user_id)
     return {
         "subject": cfg.get("mail_subject") or MAIL_SUBJECT,
         "body": cfg.get("mail_body") or DEFAULT_MAIL_BODY,
@@ -55,13 +55,14 @@ def mail_body(
     nom: str,
     genre: str,
     *,
+    user_id: int,
     prenom: str = "",
     denomination: str = "",
     poste: str = "",
     accroche: str = "",
     body_template: str | None = None,
 ) -> str:
-    template = body_template or get_mail_templates()["body"]
+    template = body_template or get_mail_templates(user_id)["body"]
     accroche_txt = (accroche or "").strip()
     if accroche_txt and "{accroche}" not in template:
         # Anciens templates sans placeholder : insert après la 1ère ligne
@@ -85,13 +86,14 @@ def relance_body(
     nom: str,
     genre: str,
     *,
+    user_id: int,
     prenom: str = "",
     denomination: str = "",
     poste: str = "",
     angle: int = 1,
     body_template: str | None = None,
 ) -> str:
-    templates = get_mail_templates()
+    templates = get_mail_templates(user_id)
     if body_template:
         template = body_template
     elif angle >= 2:
@@ -139,11 +141,12 @@ def send_candidature_email(
 ) -> dict[str, str]:
     logger.info("Envoi mail candidature → %s (contact=%s)", to_email, nom)
 
-    templates = get_mail_templates()
+    templates = get_mail_templates(user_id)
     subject = templates["subject"]
     body = mail_body(
         nom,
         genre,
+        user_id=user_id,
         prenom=prenom,
         denomination=denomination,
         poste=poste,
@@ -167,7 +170,7 @@ def send_candidature_email(
                 f.read(),
                 maintype="application",
                 subtype="pdf",
-                filename=_cv_attachment_filename(),
+                filename=_cv_attachment_filename(user_id),
             )
         logger.debug("CV joint : %s", CV_PATH)
     else:
@@ -230,11 +233,12 @@ def send_relance_email(
         siret,
     )
 
-    templates = get_mail_templates()
+    templates = get_mail_templates(user_id)
     subject = _reply_subject(original_subject or templates["subject"])
     rel_body = relance_body(
         nom,
         genre,
+        user_id=user_id,
         prenom=prenom,
         denomination=denomination,
         poste=poste,
@@ -270,7 +274,7 @@ def send_relance_email(
                 f.read(),
                 maintype="application",
                 subtype="pdf",
-                filename=_cv_attachment_filename(),
+                filename=_cv_attachment_filename(user_id),
             )
         logger.debug("CV joint à la relance : %s", CV_PATH)
     else:
