@@ -41,7 +41,7 @@ function activatePage(page) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
     }).then((r) => r.json());
-    if (res.error) throw new Error(res.error);
+    if (res.error) throw new Error(res.message || res.error);
     return pollJob(res.job_id);
   }
 
@@ -1223,6 +1223,7 @@ function activatePage(page) {
       if (!confirm(`Email de mauvaise qualité (${res.quality.note}). Forcer l'envoi ?`)) return;
       res = await doSend({ force: true, accept_warn: true });
     }
+    if (res.status === 429) return toast(res.message || res.error, "error");
     if (res.error) return toast(res.error, "error");
     if (res.accroche) document.getElementById("d-accroche").value = res.accroche;
     toast("Mail envoyé — statut → Postulé");
@@ -1275,6 +1276,8 @@ function activatePage(page) {
       }),
     }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
 
+    if (res.status === 429) return toast(res.message || res.error, "error");
+
     if (res.needs_force && !force) {
       if (!confirm(`${res.error}. Forcer ?`)) return;
       const res2 = await fetch("/api/send-relance", {
@@ -1283,7 +1286,8 @@ function activatePage(page) {
         body: JSON.stringify({
           email, nom, prenom, genre, poste, denomination, siret, force: true,
         }),
-      }).then((r) => r.json());
+      }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
+      if (res2.status === 429) return toast(res2.message || res2.error, "error");
       if (res2.error) return toast(res2.error, "error");
       toast(`Relance n°${res2.relance_number || "?"} envoyée (angle ${res2.angle || "?"})`);
     } else if (res.error) {

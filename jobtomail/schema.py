@@ -140,3 +140,12 @@ jobs = Table(
     Column("created_at", Text),
     Column("updated_at", Text),
 )
+
+usage_counters = Table(
+    "usage_counters",
+    metadata,
+    Column("user_id", Integer, primary_key=True),
+    Column("period", String(7), primary_key=True),  # "YYYY-MM"
+    Column("scans_count", Integer, server_default=text("0")),
+    Column("emails_count", Integer, server_default=text("0")),
+)

@@ -10,7 +10,7 @@ from flask import Blueprint, jsonify, request
 from jobtomail import db
 from jobtomail.db import env_or_user_config, get_entreprise
 from jobtomail.routes.auth import current_user_id
-from jobtomail.services import api_keys
+from jobtomail.services import api_keys, quotas
 from jobtomail.services.email_quality import assess_email
 from jobtomail.services.hunter import find_email as hunter_find_email
 from jobtomail.services.email_finder import find_email as find_email_smtp, FoundEmail
@@ -265,6 +265,14 @@ def send_email_route():
                 poste=poste or (ent["contact_poste"] or ""),
             ) or ""
 
+    quota = quotas.check_and_increment(user_id, "email")
+    if not quota.allowed:
+        logger.warning("Envoi mail refusé : quota mensuel atteint (user_id=%s)", user_id)
+        return jsonify({
+            "error": "quota_exceeded",
+            "message": f"Quota mensuel d'emails atteint ({quota.used}/{quota.limit}). Réinitialisation le 1er du mois.",
+        }), 429
+
     try:
         result = send_candidature_email(
             user_id,
@@ -330,6 +338,14 @@ def send_relance_route():
     original_subject = ent["email_subject"] if ent["email_subject"] else None
     if not in_reply_to:
         logger.warning("Relance sans Message-ID d'origine pour %s — envoi sans fil de discussion", siret)
+
+    quota = quotas.check_and_increment(user_id, "email")
+    if not quota.allowed:
+        logger.warning("Relance refusée : quota mensuel atteint (user_id=%s)", user_id)
+        return jsonify({
+            "error": "quota_exceeded",
+            "message": f"Quota mensuel d'emails atteint ({quota.used}/{quota.limit}). Réinitialisation le 1er du mois.",
+        }), 429
 
     try:
         result = send_relance_email(

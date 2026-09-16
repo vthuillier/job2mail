@@ -8,7 +8,7 @@ from flask import Blueprint, jsonify, request
 
 from jobtomail.constants import DEFAULT_NAF_CODES, OLLAMA_MODEL
 from jobtomail.routes.auth import current_user_id
-from jobtomail.services import api_keys, jobs
+from jobtomail.services import api_keys, jobs, quotas
 from jobtomail.services.cleaner import clean_entreprises
 from jobtomail.services.contacts import run_contacts_scan
 from jobtomail.services.dirigeants import run_dirigeants_scan
@@ -77,6 +77,15 @@ def scan_sirene():
     )
 
     user_id = current_user_id()
+
+    quota = quotas.check_and_increment(user_id, "scan")
+    if not quota.allowed:
+        logger.warning("Scan Sirene refusé : quota mensuel atteint (user_id=%s)", user_id)
+        return jsonify({
+            "error": "quota_exceeded",
+            "message": f"Quota mensuel de scans atteint ({quota.used}/{quota.limit}). Réinitialisation le 1er du mois.",
+        }), 429
+
     job_id = jobs.create_job(
         user_id,
         "sirene",

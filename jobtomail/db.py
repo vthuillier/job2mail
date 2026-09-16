@@ -21,6 +21,7 @@ from jobtomail.schema import (
     jobs as jobs_table,
     metadata,
     processed_replies as processed_replies_table,
+    usage_counters as usage_counters_table,
     user_config as user_config_table,
     user_google_tokens as user_google_tokens_table,
     users as users_table,
@@ -1103,6 +1104,40 @@ def mark_reply_classified(
     logger.info(
         "Réponse classée pour %s → %s (status_updated=%s)", siret, classification, apply_status,
     )
+
+
+def get_usage_count(user_id: int, period: str, column: str) -> int:
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            select(usage_counters_table.c[column]).where(
+                and_(usage_counters_table.c.user_id == user_id, usage_counters_table.c.period == period)
+            )
+        ).first()
+    return row[0] if row else 0
+
+
+def increment_usage_count(user_id: int, period: str, column: str) -> None:
+    with get_engine().begin() as conn:
+        existing = conn.execute(
+            select(usage_counters_table.c.user_id).where(
+                and_(usage_counters_table.c.user_id == user_id, usage_counters_table.c.period == period)
+            )
+        ).first()
+        if existing:
+            conn.execute(
+                usage_counters_table.update()
+                .where(and_(usage_counters_table.c.user_id == user_id, usage_counters_table.c.period == period))
+                .values(**{column: usage_counters_table.c[column] + 1})
+            )
+        else:
+            conn.execute(
+                usage_counters_table.insert().values(user_id=user_id, period=period, **{column: 1})
+            )
+
+
+def get_app_config_value(key: str, default: str = "") -> str:
+    """Lit une valeur de config globale (table `config`, admin-configurable)."""
+    return get_config_value(key, default)
 
 
 def get_config_value(key: str, default: str = "") -> str:
