@@ -71,12 +71,16 @@ def test_index_page_has_db_backend_section(client):
     assert b'id="db-backend-select"' in res.data
 
 
-def test_login_success_sets_real_user_id_in_session(client, monkeypatch):
-    """Après un login réussi, session['user_id'] doit pointer vers une vraie
-    ligne de la table users (et non juste être un entier magique en dur)."""
-    monkeypatch.setenv("APP_PASSWORD", "s3cret")
+def test_magic_link_login_sets_real_user_id_in_session(client, app):
+    """Après un login réussi par lien magique, session['user_id'] doit pointer
+    vers une vraie ligne de la table users (et non juste un entier magique en
+    dur)."""
+    from jobtomail.routes import auth as auth_module
 
-    res = client.post("/login", data={"password": "s3cret"})
+    with app.app_context():
+        token = auth_module.magic_link.generate_token("someone@example.com")
+
+    res = client.get(f"/auth/magic/{token}")
     assert res.status_code in (302, 303)
 
     with client.session_transaction() as sess:
@@ -86,6 +90,6 @@ def test_login_success_sets_real_user_id_in_session(client, monkeypatch):
 
     from jobtomail import db
 
-    row = db.get_user_by_email("default@localhost")
+    row = db.get_user_by_email("someone@example.com")
     assert row is not None
     assert row["id"] == user_id

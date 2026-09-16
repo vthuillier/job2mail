@@ -52,8 +52,9 @@ Toutes les clés ci-dessous peuvent être définies dans `.env` **ou** directeme
 | `SERPAPI_KEY` | Enrichissement web des entreprises | [serpapi.com](https://serpapi.com) |
 | `TOKEN_HUNTER_IO` | Recherche d'emails de contact | [hunter.io](https://hunter.io) |
 | `EMAIL_ADDRESS` / `EMAIL_PASSWORD` | Envoi des emails (SMTP Gmail) | Compte Gmail + [mot de passe d'application](https://myaccount.google.com/apppasswords) |
-| `APP_PASSWORD` | Protège l'accès à l'interface web | À choisir vous-même |
 | `SECRET_KEY` | Clé de session Flask | `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Connexion "Se connecter avec Google" | [console.cloud.google.com](https://console.cloud.google.com/apis/credentials) |
+| `APP_ENCRYPTION_KEY` | Chiffrement des refresh tokens Google en base | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 
 ## Base de données
 

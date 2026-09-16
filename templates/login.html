@@ -214,12 +214,9 @@
 
     <div class="divider">ou</div>
 
-    <form method="post" action="{{ url_for('auth.login') }}" autocomplete="current-password">
-      <p class="hint">Saisis le mot de passe pour continuer.</p>
-      <label for="password">Mot de passe</label>
-      <input id="password" name="password" type="password" required>
-      <button class="secondary" type="submit">Se connecter</button>
-    </form>
+    <a href="{{ url_for('auth.google_login_start') }}" style="text-decoration: none; display: block;">
+      <button class="secondary" type="button">Se connecter avec Google</button>
+    </a>
   </div>
 </body>
 </html>

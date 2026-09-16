@@ -1,16 +1,15 @@
-"""Authentification par mot de passe (session)."""
+"""Authentification (magic link + Google OAuth, session)."""
 
 from __future__ import annotations
 
-import hmac
 import logging
-import os
+import secrets as secrets_module
 import time
 
 from flask import Blueprint, redirect, render_template, request, session, url_for
 
 from jobtomail import db
-from jobtomail.services import magic_link
+from jobtomail.services import google_oauth, magic_link
 from jobtomail.services.mailer_transactional import send_magic_link_email
 
 logger = logging.getLogger(__name__)
@@ -19,12 +18,9 @@ DEFAULT_USER_EMAIL = "default@localhost"
 
 bp = Blueprint("auth", __name__)
 
-# Utilisateur par défaut tant que l'authentification par utilisateur (avec
-# connexion Google / session["user_id"]) n'est pas câblée — voir le plan SaaS
-# multi-tenant. L'app ne connaît aujourd'hui qu'un mot de passe partagé
-# (APP_PASSWORD) ; toutes les requêtes se comportent donc comme le même
-# utilisateur "1" jusqu'à ce qu'une tâche ultérieure implémente la vraie
-# identité par session.
+# Utilisateur par défaut historique (Phase 1, mot de passe partagé) — conservé
+# pour compatibilité tant que `_ensure_default_user` existe, mais n'est plus
+# utilisé par le flux de login courant (magic link / Google OAuth).
 DEFAULT_USER_ID = 1
 
 
@@ -38,45 +34,30 @@ def current_user_id() -> int:
 
 # Verrouillage par IP après trop d'échecs (en mémoire — best-effort par worker).
 #
-# Les compteurs sont répartis par "bucket" (ex. "password", "magic_link") afin
-# que le brute-force du mot de passe et le throttling des demandes de lien
-# magique restent indépendants pour une même IP : redemander un lien magique
-# ne doit pas déclencher le verrou du mot de passe, et une connexion réussie
-# par un canal ne doit pas effacer silencieusement le compteur de l'autre.
+# Les compteurs sont répartis par "bucket" (ex. "magic_link") afin que le
+# throttling de chaque canal de connexion reste indépendant pour une même IP :
+# redemander un lien magique ne doit pas déclencher le verrou d'un autre
+# canal, et une connexion réussie par un canal ne doit pas effacer
+# silencieusement le compteur d'un autre.
 _MAX_ATTEMPTS = 5
 _LOCKOUT_SEC = 300
 _failed_attempts: dict[tuple[str, str], int] = {}
 _locked_until: dict[tuple[str, str], float] = {}
 
 
-def _expected_password() -> str:
-    return (os.getenv("APP_PASSWORD") or "").strip()
-
-
-def auth_enabled() -> bool:
-    return bool(_expected_password())
-
-
 def is_authenticated() -> bool:
-    return bool(session.get("authenticated"))
-
-
-def check_password(candidate: str) -> bool:
-    expected = _expected_password()
-    if not expected:
-        return False
-    return hmac.compare_digest(candidate.encode("utf-8"), expected.encode("utf-8"))
+    return "user_id" in session
 
 
 def _client_ip() -> str:
     return request.remote_addr or "unknown"
 
 
-def _is_locked(ip: str, bucket: str = "password") -> bool:
+def _is_locked(ip: str, bucket: str = "magic_link") -> bool:
     return time.time() < _locked_until.get((bucket, ip), 0.0)
 
 
-def _register_failure(ip: str, bucket: str = "password") -> None:
+def _register_failure(ip: str, bucket: str = "magic_link") -> None:
     key = (bucket, ip)
     _failed_attempts[key] = _failed_attempts.get(key, 0) + 1
     if _failed_attempts[key] >= _MAX_ATTEMPTS:
@@ -87,7 +68,7 @@ def _register_failure(ip: str, bucket: str = "password") -> None:
         )
 
 
-def _register_success(ip: str, bucket: str = "password") -> None:
+def _register_success(ip: str, bucket: str = "magic_link") -> None:
     key = (bucket, ip)
     _failed_attempts.pop(key, None)
     _locked_until.pop(key, None)
@@ -120,32 +101,11 @@ def _ensure_default_user() -> int:
     return db.create_user(DEFAULT_USER_EMAIL)
 
 
-@bp.route("/login", methods=["GET", "POST"])
+@bp.route("/login")
 def login():
     if is_authenticated():
         return redirect(url_for("main.index"))
-
-    error = None
-    ip = _client_ip()
-    if request.method == "POST":
-        if _is_locked(ip):
-            logger.warning("Connexion refusée (IP verrouillée) depuis %s", ip)
-            error = "Trop de tentatives — réessaie dans quelques minutes."
-        else:
-            password = request.form.get("password") or ""
-            if check_password(password):
-                _register_success(ip)
-                session.clear()
-                session["user_id"] = _ensure_default_user()
-                session["authenticated"] = True
-                session.permanent = True
-                logger.info("Connexion réussie depuis %s", ip)
-                return redirect(_safe_next_url(request.args.get("next")))
-            _register_failure(ip)
-            logger.warning("Tentative de connexion échouée depuis %s", ip)
-            error = "Mot de passe incorrect."
-
-    return render_template("login.html", error=error)
+    return render_template("login.html")
 
 
 @bp.route("/auth/magic", methods=["POST"])
@@ -180,6 +140,39 @@ def consume_magic_link(token: str):
     session.permanent = True
     _register_success(_client_ip(), bucket="magic_link")
     return redirect(_safe_next_url(request.args.get("next")))
+
+
+@bp.route("/auth/google/start")
+def google_login_start():
+    state = secrets_module.token_urlsafe(24)
+    session["_oauth_state"] = state
+    session["_oauth_next"] = _safe_next_url(request.args.get("next"))
+    return redirect(google_oauth.build_auth_url(state))
+
+
+@bp.route("/auth/google/callback")
+def google_login_callback():
+    expected_state = session.pop("_oauth_state", None)
+    next_url = _safe_next_url(session.pop("_oauth_next", None))
+    if not expected_state or request.args.get("state") != expected_state:
+        logger.warning("Échec de connexion Google (state invalide) depuis %s", _client_ip())
+        return render_template("login.html", error="Échec de connexion Google, réessaie.")
+
+    code = request.args.get("code")
+    if not code:
+        logger.warning("Échec de connexion Google (code manquant) depuis %s", _client_ip())
+        return render_template("login.html", error="Échec de connexion Google, réessaie.")
+
+    identity = google_oauth.exchange_code(code)
+    user = db.get_user_by_email(identity.email)
+    user_id = user["id"] if user else db.create_user(identity.email, google_sub=identity.sub)
+    if identity.refresh_token:
+        db.save_google_refresh_token(user_id, identity.refresh_token)
+    session.clear()
+    session["user_id"] = user_id
+    session["authenticated"] = True
+    session.permanent = True
+    return redirect(next_url)
 
 
 @bp.route("/logout", methods=["POST", "GET"])
