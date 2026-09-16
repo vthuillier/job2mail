@@ -136,15 +136,26 @@
       const res = await fetch("/admin/api/users");
       const users = await res.json();
       const body = document.getElementById("users-body");
-      body.innerHTML = users.map(u => `
-        <tr>
-          <td>${u.email}</td>
-          <td>${u.created_at || ""}</td>
-          <td>${u.is_admin ? "oui" : "non"}</td>
-          <td>${u.scans_count ?? 0}</td>
-          <td>${u.emails_count ?? 0}</td>
-        </tr>
-      `).join("");
+      // Build rows via DOM APIs + textContent (never innerHTML/template-string
+      // interpolation) so that attacker-controlled fields — email in
+      // particular, which only requires "@" in request_magic_link — cannot
+      // inject HTML/JS into this authenticated admin page (stored XSS).
+      body.replaceChildren(...users.map(u => {
+        const tr = document.createElement("tr");
+        const values = [
+          u.email,
+          u.created_at || "",
+          u.is_admin ? "oui" : "non",
+          u.scans_count ?? 0,
+          u.emails_count ?? 0,
+        ];
+        for (const v of values) {
+          const td = document.createElement("td");
+          td.textContent = String(v);
+          tr.appendChild(td);
+        }
+        return tr;
+      }));
     }
 
     document.getElementById("quota-form").addEventListener("submit", async (e) => {
