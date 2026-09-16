@@ -19,7 +19,7 @@
   </div>
   <nav>
     <button class="nav-btn active" data-page="entreprises">Entreprises</button>
-    <button class="nav-btn" data-page="scan">Scan Sirene</button>
+    <button class="nav-btn" data-page="scan">Rechercher des entreprises</button>
     <button class="nav-btn" data-page="config">Paramètres</button>
   </nav>
 </header>
@@ -194,11 +194,14 @@
           <input id="naf-search" class="form-control" placeholder="Rechercher un métier ou secteur…">
           <div class="naf-box" id="naf-search-results"></div>
           <div class="naf-box" id="naf-list"></div>
-          <div class="naf-add">
-            <input id="naf-code" class="form-control" placeholder="62.01Z">
-            <input id="naf-lib" class="form-control" placeholder="Libellé">
-            <button class="btn btn-secondary" id="btn-add-naf" type="button">Ajouter</button>
-          </div>
+          <details class="adv-settings">
+            <summary>Réglages avancés</summary>
+            <div class="naf-add">
+              <input id="naf-code" class="form-control" placeholder="62.01Z">
+              <input id="naf-lib" class="form-control" placeholder="Libellé">
+              <button class="btn btn-secondary" id="btn-add-naf" type="button">Ajouter</button>
+            </div>
+          </details>
         </div>
 
         <div class="form-group">
@@ -245,7 +248,7 @@
             marquées hors champs sont <strong>toujours conservées</strong>.
           </p>
           <button class="btn btn-secondary" id="btn-hors-champs" type="button" style="width:100%;margin-bottom:14px;">
-            Marquer hors champs (NAF / thème non IT)
+            Nettoyer les résultats non pertinents
           </button>
           <div class="form-row">
             <div class="form-group">
@@ -347,11 +350,14 @@
           <input id="cfg-naf-search" class="form-control" placeholder="Rechercher un métier ou secteur…">
           <div class="naf-box" id="cfg-naf-search-results"></div>
           <div class="naf-box" id="cfg-naf-list"></div>
-          <div class="naf-add">
-            <input id="cfg-naf-code" class="form-control" placeholder="62.01Z">
-            <input id="cfg-naf-lib" class="form-control" placeholder="Libellé">
-            <button class="btn btn-secondary" id="btn-cfg-add-naf" type="button">Ajouter</button>
-          </div>
+          <details class="adv-settings">
+            <summary>Réglages avancés</summary>
+            <div class="naf-add">
+              <input id="cfg-naf-code" class="form-control" placeholder="62.01Z">
+              <input id="cfg-naf-lib" class="form-control" placeholder="Libellé">
+              <button class="btn btn-secondary" id="btn-cfg-add-naf" type="button">Ajouter</button>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -390,43 +396,9 @@
       </div>
 
       <div class="config-section">
-        <h3>Base de données</h3>
-        <p class="help" id="db-backend-status">Backend actuel : SQLite (fichier local).</p>
-        <div class="form-group">
-          <label class="form-label">Backend</label>
-          <select id="db-backend-select" class="form-control">
-            <option value="sqlite">SQLite (par défaut)</option>
-            <option value="postgres">PostgreSQL</option>
-            <option value="mariadb">MariaDB</option>
-          </select>
-        </div>
-        <div id="db-backend-fields" style="display:none;">
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Hôte</label>
-              <input id="db-host" class="form-control" placeholder="localhost">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Port</label>
-              <input id="db-port" class="form-control" placeholder="5432">
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Utilisateur</label>
-              <input id="db-user" class="form-control">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Mot de passe</label>
-              <input id="db-password" type="password" class="form-control">
-            </div>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Nom de la base</label>
-            <input id="db-dbname" class="form-control">
-          </div>
-        </div>
-        <button class="btn btn-secondary" id="btn-db-backend-save" type="button">Tester et enregistrer</button>
+        <h3>Compte</h3>
+        <p class="help">Suppression définitive de ton compte et de toutes tes données (entreprises, candidatures, réglages).</p>
+        <button class="btn btn-secondary" id="btn-delete-account" type="button">Supprimer mon compte</button>
       </div>
 
       <button class="btn btn-primary" id="btn-save-cfg" style="width:100%;">Sauvegarder tous les paramètres</button>
@@ -435,6 +407,25 @@
 </main>
 
 <div class="overlay" id="overlay"></div>
+
+{% if not current_user.consent_at %}
+<div class="overlay active" id="consent-overlay"></div>
+<div class="modal active" id="modal-consent" role="dialog" aria-labelledby="modal-consent-title" aria-modal="true">
+  <div class="modal-head">
+    <strong id="modal-consent-title">Avant de commencer</strong>
+  </div>
+  <div class="modal-body">
+    <p class="help" style="margin-top:0;">
+      J'utilise cet outil dans le cadre d'une recherche d'emploi personnelle et je m'engage à
+      respecter le RGPD (données de contact collectées uniquement à des fins de candidature,
+      non revendues, supprimables à tout moment depuis les Paramètres).
+    </p>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-primary" id="btn-consent-accept" type="button" style="flex:1;">J'accepte</button>
+  </div>
+</div>
+{% endif %}
 
 <div class="modal" id="modal-add" role="dialog" aria-labelledby="modal-add-title" aria-modal="true">
   <div class="modal-head">

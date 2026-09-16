@@ -483,7 +483,6 @@ function activatePage(page) {
       activatePage("config");
       toast("Bienvenue ! Renseigne tes paramètres pour commencer (ou passe-les par un fichier .env).");
     }
-    loadDbBackend();
   }
 
   function renderNafBox(boxId, checkedAll = false) {
@@ -1362,65 +1361,34 @@ function activatePage(page) {
     }
   });
 
-  async function loadDbBackend() {
-    const res = await fetch("/api/db/backend").then((r) => r.json());
-    const select = document.getElementById("db-backend-select");
-    const status = document.getElementById("db-backend-status");
-    const fields = document.getElementById("db-backend-fields");
-    const saveBtn = document.getElementById("btn-db-backend-save");
-    if (!select || !status || !fields) return;
-
-    select.value = res.backend || "sqlite";
-    fields.style.display = res.backend === "sqlite" ? "none" : "block";
-    document.getElementById("db-host").value = res.host || "";
-    document.getElementById("db-port").value = res.port || "";
-    document.getElementById("db-user").value = res.user || "";
-    document.getElementById("db-dbname").value = res.dbname || "";
-
-    if (res.locked) {
-      status.textContent = `Backend actuel : ${res.backend} (imposé par variable d'environnement DB_BACKEND).`;
-      select.disabled = true;
-      if (saveBtn) saveBtn.disabled = true;
-    } else {
-      status.textContent = `Backend actuel : ${res.backend} (source : ${res.source === "file" ? "config locale" : "défaut"}).`;
-      select.disabled = false;
-      if (saveBtn) saveBtn.disabled = false;
+  document.getElementById("btn-consent-accept")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-consent-accept");
+    btn.disabled = true;
+    try {
+      await fetch("/api/account/consent", { method: "POST" });
+    } catch (err) {
+      toast(String(err.message || err), "error");
+    } finally {
+      document.getElementById("modal-consent")?.remove();
+      document.getElementById("consent-overlay")?.remove();
+      btn.disabled = false;
     }
-  }
-
-  document.getElementById("db-backend-select")?.addEventListener("change", (e) => {
-    const fields = document.getElementById("db-backend-fields");
-    if (fields) fields.style.display = e.target.value === "sqlite" ? "none" : "block";
   });
 
-  document.getElementById("btn-db-backend-save")?.addEventListener("click", async () => {
-    const btn = document.getElementById("btn-db-backend-save");
-    const backend = document.getElementById("db-backend-select").value;
-    const payload = {
-      backend,
-      host: document.getElementById("db-host").value.trim(),
-      port: document.getElementById("db-port").value.trim(),
-      user: document.getElementById("db-user").value.trim(),
-      password: document.getElementById("db-password").value,
-      dbname: document.getElementById("db-dbname").value.trim(),
-    };
+  document.getElementById("btn-delete-account")?.addEventListener("click", async () => {
+    if (!confirm("Supprimer définitivement ton compte et toutes tes données (entreprises, candidatures, réglages) ? Cette action est irréversible.")) {
+      return;
+    }
+    const btn = document.getElementById("btn-delete-account");
     btn.disabled = true;
-    const prevText = btn.textContent;
-    btn.textContent = "Test de connexion…";
     try {
-      const res = await fetch("/api/db/backend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }).then((r) => r.json());
+      const res = await fetch("/api/account/delete", { method: "POST" }).then((r) => r.json());
       if (res.error) return toast(res.error, "error");
-      toast(`Backend DB changé : ${res.backend}`);
-      await loadDbBackend();
+      window.location.href = "/login";
     } catch (err) {
       toast(String(err.message || err), "error");
     } finally {
       btn.disabled = false;
-      btn.textContent = prevText;
     }
   });
 
@@ -1551,7 +1519,7 @@ function activatePage(page) {
 
   document.getElementById("btn-hors-champs").addEventListener("click", async () => {
     const btn = document.getElementById("btn-hors-champs");
-    if (!confirm("Marquer en « hors champs » toutes les entreprises à postuler dont le NAF ou le thème n'est pas informatique ?")) {
+    if (!confirm("Nettoyer les résultats non pertinents : marquer comme non pertinentes toutes les entreprises à postuler dont le secteur ou la thématique n'est pas informatique ?")) {
       return;
     }
     btn.disabled = true;
@@ -1571,7 +1539,7 @@ function activatePage(page) {
       document.querySelector('.nav-btn[data-page="entreprises"]').click();
     } finally {
       btn.disabled = false;
-      btn.textContent = "Marquer hors champs (NAF / thème non IT)";
+      btn.textContent = "Nettoyer les résultats non pertinents";
     }
   });
 
@@ -1595,7 +1563,7 @@ function activatePage(page) {
     }
 
     btn.disabled = true;
-    btn.innerHTML = `<span class="spinner"></span> Scan Sirene…`;
+    btn.innerHTML = `<span class="spinner"></span> Recherche en cours…`;
 
     try {
       const national = document.getElementById("scan-national").checked;

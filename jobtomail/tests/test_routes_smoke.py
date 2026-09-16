@@ -77,10 +77,12 @@ def test_prune_invalid_min_employees_returns_400(client):
     assert res.status_code == 400
 
 
-def test_index_page_has_db_backend_section(client):
+def test_index_page_hides_db_backend_picker(client):
+    """La sélection du backend DB est une décision exploitant (variables
+    d'environnement), pas un réglage utilisateur exposé dans l'UI."""
     res = client.get("/")
     assert res.status_code == 200
-    assert b'id="db-backend-select"' in res.data
+    assert b'id="db-backend-select"' not in res.data
 
 
 def test_magic_link_login_sets_real_user_id_in_session(client, app):
@@ -116,3 +118,19 @@ def test_index_renders_ad_slot_when_enabled(client, temp_db):
         sess["authenticated"] = True
     response = client.get("/")
     assert b'class="ad-slot"' in response.data
+
+
+def test_delete_account_purges_all_user_data(client, temp_db):
+    from jobtomail import db
+
+    db.create_user("todelete@example.com")
+    db.insert_entreprise(1, {"siret": "11111111100001", "denomination": "X", "adresse": "", "commune": ""})
+    with client.session_transaction() as sess:
+        sess["user_id"] = 1
+        sess["authenticated"] = True
+
+    response = client.post("/api/account/delete")
+
+    assert response.status_code == 200
+    assert db.get_user_by_id(1) is None
+    assert db.list_entreprises(1) == []
