@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import secrets as secrets_module
 import time
 
@@ -101,6 +102,21 @@ def _ensure_default_user() -> int:
     return db.create_user(DEFAULT_USER_EMAIL)
 
 
+def _maybe_bootstrap_admin(user_id: int, email: str) -> None:
+    """Promeut `user_id` admin si son email correspond à ADMIN_EMAIL.
+
+    Ré-appliqué à chaque connexion (pas seulement à la création du compte) afin
+    qu'un opérateur puisse définir ADMIN_EMAIL après coup, sur un compte déjà
+    existant, sans intervention manuelle en base.
+    """
+    admin_email = (os.environ.get("ADMIN_EMAIL") or "").strip().lower()
+    if not admin_email or email.strip().lower() != admin_email:
+        return
+    user = db.get_user_by_id(user_id)
+    if user and not user["is_admin"]:
+        db.set_admin(user_id)
+
+
 @bp.route("/login")
 def login():
     if is_authenticated():
@@ -134,6 +150,7 @@ def consume_magic_link(token: str):
         return render_template("login.html", error="Lien invalide ou expiré, redemande-en un.")
     user = db.get_user_by_email(email)
     user_id = user["id"] if user else db.create_user(email)
+    _maybe_bootstrap_admin(user_id, email)
     session.clear()
     session["user_id"] = user_id
     session["authenticated"] = True
@@ -177,6 +194,7 @@ def google_login_callback():
 
     user = db.get_user_by_email(identity.email)
     user_id = user["id"] if user else db.create_user(identity.email, google_sub=identity.sub)
+    _maybe_bootstrap_admin(user_id, identity.email)
     if identity.refresh_token:
         db.save_google_refresh_token(user_id, identity.refresh_token)
     session.clear()

@@ -166,6 +166,14 @@ def set_user_consent(user_id: int) -> None:
         )
 
 
+def set_admin(user_id: int) -> None:
+    """Promeut cet utilisateur admin (idempotent)."""
+    with get_engine().begin() as conn:
+        conn.execute(
+            users_table.update().where(users_table.c.id == user_id).values(is_admin=1)
+        )
+
+
 def delete_user_account(user_id: int) -> None:
     """Purge toutes les données de l'utilisateur (RGPD, suppression de compte),
     dans toutes les tables scoppées par user_id, puis la ligne `users` elle-même."""

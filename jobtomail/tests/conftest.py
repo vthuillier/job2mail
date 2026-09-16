@@ -30,6 +30,9 @@ def app(temp_db, monkeypatch):
     monkeypatch.setenv("SERPAPI_KEY", "")
     monkeypatch.setenv("SERPAPI_TOKEN", "")
     monkeypatch.setenv("TOKEN_HUNTER_IO", "")
+    # Un .env local peut définir ADMIN_EMAIL pour l'opérateur — l'effacer pour
+    # que les tests de login ne promeuvent pas un compte admin par surprise.
+    monkeypatch.setenv("ADMIN_EMAIL", "")
     from jobtomail import create_app
 
     flask_app = create_app()
