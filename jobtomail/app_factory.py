@@ -15,6 +15,7 @@ from jobtomail.constants import TEMPLATES_DIR
 from jobtomail import db
 from jobtomail.db import init_db
 from jobtomail.logging_setup import setup_logging
+from jobtomail.routes.admin import bp as admin_bp
 from jobtomail.routes.auth import bp as auth_bp, is_authenticated
 from jobtomail.routes.config_routes import bp as config_bp
 from jobtomail.routes.email_routes import bp as email_bp
@@ -74,6 +75,7 @@ def create_app() -> Flask:
         return response
 
     app.register_blueprint(auth_bp)
+    app.register_blueprint(admin_bp)
     app.register_blueprint(config_bp)
     app.register_blueprint(entreprises_bp)
     app.register_blueprint(scans_bp)

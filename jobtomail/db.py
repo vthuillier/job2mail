@@ -158,6 +158,35 @@ def get_user_by_id(user_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def get_all_users() -> list[dict[str, Any]]:
+    with get_engine().connect() as conn:
+        rows = conn.execute(select(users_table)).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def get_all_users_with_usage(period: str | None = None) -> list[dict[str, Any]]:
+    """Liste des utilisateurs avec leur usage (scans/emails) pour `period`
+    (défaut : mois courant, format "YYYY-MM"), pour le panneau admin."""
+    period = period or datetime.now(timezone.utc).strftime("%Y-%m")
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            select(
+                users_table,
+                func.coalesce(usage_counters_table.c.scans_count, 0).label("scans_count"),
+                func.coalesce(usage_counters_table.c.emails_count, 0).label("emails_count"),
+            ).select_from(
+                users_table.outerjoin(
+                    usage_counters_table,
+                    and_(
+                        usage_counters_table.c.user_id == users_table.c.id,
+                        usage_counters_table.c.period == period,
+                    ),
+                )
+            )
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
 def create_user(email: str, google_sub: str | None = None, is_admin: bool = False) -> int:
     with get_engine().begin() as conn:
         result = conn.execute(
