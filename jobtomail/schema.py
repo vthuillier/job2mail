@@ -40,6 +40,7 @@ users = Table(
     Column("google_sub", String(255), unique=True),
     Column("created_at", Text),
     Column("is_admin", Integer, server_default=text("0")),
+    Column("consent_at", Text),
 )
 
 entreprises = Table(

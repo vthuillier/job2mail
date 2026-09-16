@@ -6,7 +6,7 @@ import json
 import logging
 import os
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, render_template, request, session
 from sqlalchemy import create_engine, text as sa_text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -40,7 +40,26 @@ _ENCRYPTED_USER_CONFIG_KEYS = ("SERPAPI_KEY", "TOKEN_HUNTER_IO")
 def index():
     ads_enabled = db.get_config_value("ads_enabled", "0") == "1"
     ads_network_id = db.get_config_value("ads_network_id", "")
-    return render_template("index.html", ads_enabled=ads_enabled, ads_network_id=ads_network_id)
+    current_user = db.get_user_by_id(current_user_id())
+    return render_template(
+        "index.html",
+        ads_enabled=ads_enabled,
+        ads_network_id=ads_network_id,
+        current_user=current_user,
+    )
+
+
+@bp.route("/api/account/consent", methods=["POST"])
+def record_consent():
+    db.set_user_consent(current_user_id())
+    return jsonify({"ok": True})
+
+
+@bp.route("/api/account/delete", methods=["POST"])
+def delete_account():
+    db.delete_user_account(current_user_id())
+    session.clear()
+    return jsonify({"ok": True})
 
 
 @bp.route("/api/config", methods=["GET", "POST"])
