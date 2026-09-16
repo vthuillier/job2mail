@@ -15,7 +15,8 @@ from jobtomail.constants import TEMPLATES_DIR
 from jobtomail import db
 from jobtomail.db import init_db
 from jobtomail.logging_setup import setup_logging
-from jobtomail.routes.auth import auth_enabled, bp as auth_bp, is_authenticated
+from jobtomail.routes.admin import bp as admin_bp
+from jobtomail.routes.auth import bp as auth_bp, is_authenticated
 from jobtomail.routes.config_routes import bp as config_bp
 from jobtomail.routes.email_routes import bp as email_bp
 from jobtomail.routes.entreprises import bp as entreprises_bp
@@ -24,7 +25,16 @@ from jobtomail.routes.scans import bp as scans_bp
 
 logger = logging.getLogger(__name__)
 
-_PUBLIC_ENDPOINTS = frozenset({"auth.login", "static"})
+_PUBLIC_ENDPOINTS = frozenset(
+    {
+        "auth.login",
+        "auth.request_magic_link",
+        "auth.consume_magic_link",
+        "auth.google_login_start",
+        "auth.google_login_callback",
+        "static",
+    }
+)
 
 
 def _resolve_secret_key() -> str:
@@ -65,6 +75,7 @@ def create_app() -> Flask:
         return response
 
     app.register_blueprint(auth_bp)
+    app.register_blueprint(admin_bp)
     app.register_blueprint(config_bp)
     app.register_blueprint(entreprises_bp)
     app.register_blueprint(scans_bp)
@@ -73,8 +84,6 @@ def create_app() -> Flask:
 
     @app.before_request
     def require_auth():
-        if not auth_enabled():
-            return None
         if request.endpoint in _PUBLIC_ENDPOINTS:
             return None
         if is_authenticated():
@@ -82,11 +91,6 @@ def create_app() -> Flask:
         if request.path.startswith("/api/"):
             return jsonify({"error": "unauthorized"}), 401
         return redirect(url_for("auth.login", next=request.path))
-
-    if auth_enabled():
-        logger.info("Protection par mot de passe activée")
-    else:
-        logger.warning("APP_PASSWORD non défini — l'app est ouverte sans auth")
 
     logger.info("Application JobToMail créée")
     return app

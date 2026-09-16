@@ -348,6 +348,7 @@ def _match_entreprise(
 
 
 def check_replies(
+    user_id: int,
     email_address: str,
     email_password: str,
     *,
@@ -357,7 +358,7 @@ def check_replies(
     Scanne la boîte, classe les réponses liées aux candidatures,
     met à jour le statut — sans ouvrir / marquer les mails comme lus.
     """
-    candidatures = db.list_candidatures_en_attente()
+    candidatures = db.list_candidatures_en_attente(user_id)
     if not candidatures:
         return {
             "ok": True,
@@ -368,7 +369,7 @@ def check_replies(
             "message": "Aucune candidature en attente (postulé / relancé)",
         }
 
-    already = db.list_processed_reply_ids()
+    already = db.list_processed_reply_ids(user_id)
     replies = fetch_inbox_replies(email_address, email_password, limit=limit)
 
     results: list[dict[str, Any]] = []
@@ -393,6 +394,7 @@ def check_replies(
         excerpt = (reply.body or "")[:280]
 
         db.mark_reply_classified(
+            user_id,
             ent["siret"],
             classification,
             message_id=mid or f"uid:{reply.uid}",

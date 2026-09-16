@@ -18,8 +18,13 @@ from jobtomail.schema import (
     config as config_table,
     entreprises as entreprises_table,
     ix_entreprises_score_denom,
+    jobs as jobs_table,
     metadata,
     processed_replies as processed_replies_table,
+    usage_counters as usage_counters_table,
+    user_config as user_config_table,
+    user_google_tokens as user_google_tokens_table,
+    users as users_table,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +41,7 @@ _COLUMN_ALTER_DEFAULTS = {
     "dirigeants_scanned": "0",
     "relance_count": "0",
     "travel_without_tolls": "0",
+    "user_id": "0",
 }
 
 
@@ -87,16 +93,21 @@ def _insert_ignore(conn, table, values: dict[str, Any]) -> bool:
     return result.rowcount > 0
 
 
-def _insert_replace(conn, table, values: dict[str, Any], pk_col: str) -> None:
-    """Upsert : insère, ou met à jour si la clé primaire existe déjà."""
-    update_cols = {k: v for k, v in values.items() if k != pk_col}
+def _insert_replace(conn, table, values: dict[str, Any], pk_col: str | list[str]) -> None:
+    """Upsert : insère, ou met à jour si la clé primaire existe déjà.
+
+    `pk_col` accepte une seule colonne (str) ou une liste de colonnes pour
+    les clés primaires composites (ex : `user_config` avec user_id + key).
+    """
+    pk_cols = pk_col if isinstance(pk_col, list) else [pk_col]
+    update_cols = {k: v for k, v in values.items() if k not in pk_cols}
     dialect = conn.engine.dialect.name
     if dialect == "sqlite":
         stmt = sqlite.insert(table).values(**values)
-        stmt = stmt.on_conflict_do_update(index_elements=[pk_col], set_=update_cols)
+        stmt = stmt.on_conflict_do_update(index_elements=pk_cols, set_=update_cols)
     elif dialect == "postgresql":
         stmt = postgresql.insert(table).values(**values)
-        stmt = stmt.on_conflict_do_update(index_elements=[pk_col], set_=update_cols)
+        stmt = stmt.on_conflict_do_update(index_elements=pk_cols, set_=update_cols)
     elif dialect == "mysql":
         stmt = mysql.insert(table).values(**values)
         stmt = stmt.on_duplicate_key_update(**update_cols)
@@ -115,30 +126,141 @@ def init_db() -> None:
 
 def _migrate(engine: Engine) -> None:
     inspector = inspect(engine)
-    existing = {col["name"] for col in inspector.get_columns("entreprises")}
-    with engine.begin() as conn:
-        for col in entreprises_table.columns:
-            if col.name in existing:
-                continue
-            coltype = col.type.compile(dialect=engine.dialect)
-            ddl = f"ALTER TABLE entreprises ADD COLUMN {col.name} {coltype}"
-            default = _COLUMN_ALTER_DEFAULTS.get(col.name)
-            if default is not None:
-                ddl += f" DEFAULT {default}"
-            logger.info("Migration : ajout colonne entreprises.%s", col.name)
-            conn.exec_driver_sql(ddl)
+    for table in (entreprises_table, jobs_table, processed_replies_table, users_table):
+        existing = {col["name"] for col in inspector.get_columns(table.name)}
+        with engine.begin() as conn:
+            for col in table.columns:
+                if col.name in existing:
+                    continue
+                coltype = col.type.compile(dialect=engine.dialect)
+                ddl = f"ALTER TABLE {table.name} ADD COLUMN {col.name} {coltype}"
+                default = _COLUMN_ALTER_DEFAULTS.get(col.name)
+                if default is not None:
+                    ddl += f" DEFAULT {default}"
+                logger.info("Migration : ajout colonne %s.%s", table.name, col.name)
+                conn.exec_driver_sql(ddl)
     ix_entreprises_score_denom.create(engine, checkfirst=True)
 
 
-def create_job_row(job_id: str, kind: str, params: dict[str, Any] | None = None) -> None:
+def get_user_by_email(email: str) -> dict[str, Any] | None:
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            select(users_table).where(users_table.c.email == email)
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+def get_user_by_id(user_id: int) -> dict[str, Any] | None:
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            select(users_table).where(users_table.c.id == user_id)
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+def set_user_consent(user_id: int) -> None:
+    """Enregistre le consentement RGPD (horodatage) pour cet utilisateur."""
+    with get_engine().begin() as conn:
+        conn.execute(
+            users_table.update().where(users_table.c.id == user_id).values(consent_at=_now())
+        )
+
+
+def delete_user_account(user_id: int) -> None:
+    """Purge toutes les données de l'utilisateur (RGPD, suppression de compte),
+    dans toutes les tables scoppées par user_id, puis la ligne `users` elle-même."""
+    with get_engine().begin() as conn:
+        for table in (
+            entreprises_table,
+            jobs_table,
+            processed_replies_table,
+            user_config_table,
+            user_google_tokens_table,
+            usage_counters_table,
+        ):
+            conn.execute(table.delete().where(table.c.user_id == user_id))
+        conn.execute(users_table.delete().where(users_table.c.id == user_id))
+
+
+def get_all_users() -> list[dict[str, Any]]:
+    with get_engine().connect() as conn:
+        rows = conn.execute(select(users_table)).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def get_all_users_with_usage(period: str | None = None) -> list[dict[str, Any]]:
+    """Liste des utilisateurs avec leur usage (scans/emails) pour `period`
+    (défaut : mois courant, format "YYYY-MM"), pour le panneau admin."""
+    period = period or datetime.now(timezone.utc).strftime("%Y-%m")
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            select(
+                users_table,
+                func.coalesce(usage_counters_table.c.scans_count, 0).label("scans_count"),
+                func.coalesce(usage_counters_table.c.emails_count, 0).label("emails_count"),
+            ).select_from(
+                users_table.outerjoin(
+                    usage_counters_table,
+                    and_(
+                        usage_counters_table.c.user_id == users_table.c.id,
+                        usage_counters_table.c.period == period,
+                    ),
+                )
+            )
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def create_user(email: str, google_sub: str | None = None, is_admin: bool = False) -> int:
+    with get_engine().begin() as conn:
+        result = conn.execute(
+            users_table.insert().values(
+                email=email,
+                google_sub=google_sub,
+                created_at=_now(),
+                is_admin=int(is_admin),
+            )
+        )
+    return result.inserted_primary_key[0]
+
+
+def save_google_refresh_token(user_id: int, refresh_token: str) -> None:
+    """Chiffre puis persiste le refresh token Google de l'utilisateur (upsert)."""
+    from jobtomail.services.crypto import encrypt
+
+    encrypted = encrypt(refresh_token)
+    with get_engine().begin() as conn:
+        _insert_replace(
+            conn,
+            user_google_tokens_table,
+            {"user_id": user_id, "refresh_token_encrypted": encrypted, "updated_at": _now()},
+            pk_col="user_id",
+        )
+
+
+def get_google_refresh_token(user_id: int) -> str | None:
+    """Déchiffre et renvoie le refresh token Google de l'utilisateur, ou None."""
+    from jobtomail.services.crypto import decrypt
+
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            select(user_google_tokens_table.c.refresh_token_encrypted).where(
+                user_google_tokens_table.c.user_id == user_id
+            )
+        ).first()
+    return decrypt(row[0]) if row else None
+
+
+def create_job_row(user_id: int, job_id: str, kind: str, params: dict[str, Any] | None = None) -> None:
     with get_engine().begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO jobs (id, kind, status, params, created_at, updated_at) "
-                "VALUES (:id, :kind, 'queued', :params, :now, :now)"
+                "INSERT INTO jobs (id, user_id, kind, status, params, created_at, updated_at) "
+                "VALUES (:id, :user_id, :kind, 'queued', :params, :now, :now)"
             ),
             {
                 "id": job_id,
+                "user_id": user_id,
                 "kind": kind,
                 "params": json.dumps(params or {}, ensure_ascii=False),
                 "now": _now(),
@@ -147,6 +269,7 @@ def create_job_row(job_id: str, kind: str, params: dict[str, Any] | None = None)
 
 
 def update_job_row(
+    user_id: int,
     job_id: str,
     *,
     status: str | None = None,
@@ -169,13 +292,19 @@ def update_job_row(
     set_clause = ", ".join(f"{k} = :{k}" for k in fields)
     params = dict(fields)
     params["id"] = job_id
+    params["user_id"] = user_id
     with get_engine().begin() as conn:
-        conn.execute(text(f"UPDATE jobs SET {set_clause} WHERE id = :id"), params)
+        conn.execute(
+            text(f"UPDATE jobs SET {set_clause} WHERE id = :id AND user_id = :user_id"), params
+        )
 
 
-def get_job_row(job_id: str) -> dict[str, Any] | None:
+def get_job_row(user_id: int, job_id: str) -> dict[str, Any] | None:
     with get_engine().connect() as conn:
-        row = conn.execute(text("SELECT * FROM jobs WHERE id = :id"), {"id": job_id}).mappings().first()
+        row = conn.execute(
+            text("SELECT * FROM jobs WHERE id = :id AND user_id = :user_id"),
+            {"id": job_id, "user_id": user_id},
+        ).mappings().first()
     if not row:
         return None
     data = dict(row)
@@ -188,37 +317,44 @@ def get_job_row(job_id: str) -> dict[str, Any] | None:
     return data
 
 
-def delete_old_jobs(max_age_hours: int = 24) -> int:
+def delete_old_jobs(user_id: int, max_age_hours: int = 24) -> int:
     threshold = (datetime.utcnow() - timedelta(hours=max_age_hours)).strftime("%Y-%m-%d %H:%M:%S")
     with get_engine().begin() as conn:
-        result = conn.execute(text("DELETE FROM jobs WHERE created_at < :threshold"), {"threshold": threshold})
+        result = conn.execute(
+            text("DELETE FROM jobs WHERE created_at < :threshold AND user_id = :user_id"),
+            {"threshold": threshold, "user_id": user_id},
+        )
     return result.rowcount
 
 
-def list_entreprises():
+def list_entreprises(user_id: int):
+    t = entreprises_table
+    order = (func.coalesce(t.c.score_pertinence, 0).desc(), func.lower(t.c.denomination).asc())
     with get_engine().connect() as conn:
         rows = conn.execute(
-            text(
-                """
-                SELECT * FROM entreprises
-                ORDER BY COALESCE(score_pertinence, 0) DESC, LOWER(denomination) ASC
-                """
-            )
+            select(t).where(t.c.user_id == user_id).order_by(*order)
         ).mappings().all()
-    return list(rows)
+    return [dict(r) for r in rows]
 
 
-def get_entreprise(siret: str):
+def get_entreprise(user_id: int, siret: str):
     with get_engine().connect() as conn:
         row = conn.execute(
-            text("SELECT * FROM entreprises WHERE siret = :siret"), {"siret": siret}
+            select(entreprises_table).where(
+                and_(
+                    entreprises_table.c.user_id == user_id,
+                    entreprises_table.c.siret == siret,
+                )
+            )
         ).mappings().first()
-    return row
+    return dict(row) if row else None
 
 
-def _apply_entreprise_filters(stmt, f: dict[str, Any], travel_origin: str | None):
+def _apply_entreprise_filters(user_id: int, stmt, f: dict[str, Any], travel_origin: str | None):
     """Applique les filtres liste/carte/candidats-trajet (mêmes règles que l'UI)."""
     t = entreprises_table
+
+    stmt = stmt.where(t.c.user_id == user_id)
 
     status = (f.get("status") or "").strip()
     if status and status != "tous":
@@ -292,20 +428,20 @@ def _apply_entreprise_filters(stmt, f: dict[str, Any], travel_origin: str | None
 
 
 def list_entreprises_page(
-    f: dict[str, Any], travel_origin: str | None, page: int, per_page: int
+    user_id: int, f: dict[str, Any], travel_origin: str | None, page: int, per_page: int
 ) -> tuple[list[Any], int]:
     """Page filtrée d'entreprises + nombre total de résultats correspondants."""
     t = entreprises_table
     order = (func.coalesce(t.c.score_pertinence, 0).desc(), func.lower(t.c.denomination).asc())
-    list_stmt = _apply_entreprise_filters(select(t), f, travel_origin).order_by(*order)
-    count_stmt = _apply_entreprise_filters(select(func.count()).select_from(t), f, travel_origin)
+    list_stmt = _apply_entreprise_filters(user_id, select(t), f, travel_origin).order_by(*order)
+    count_stmt = _apply_entreprise_filters(user_id, select(func.count()).select_from(t), f, travel_origin)
     with get_engine().connect() as conn:
         total = conn.execute(count_stmt).scalar_one()
         rows = conn.execute(list_stmt.limit(per_page).offset((page - 1) * per_page)).mappings().all()
     return list(rows), total
 
 
-def list_entreprises_lite(f: dict[str, Any], travel_origin: str | None) -> list[Any]:
+def list_entreprises_lite(user_id: int, f: dict[str, Any], travel_origin: str | None) -> list[Any]:
     """Liste allégée (carte + calcul candidats trajet) : tous les résultats, pas de pagination."""
     t = entreprises_table
     cols = [
@@ -322,21 +458,23 @@ def list_entreprises_lite(f: dict[str, Any], travel_origin: str | None) -> list[
         t.c.travel_distance_km,
     ]
     order = (func.coalesce(t.c.score_pertinence, 0).desc(), func.lower(t.c.denomination).asc())
-    stmt = _apply_entreprise_filters(select(*cols), f, travel_origin).order_by(*order)
+    stmt = _apply_entreprise_filters(user_id, select(*cols), f, travel_origin).order_by(*order)
     with get_engine().connect() as conn:
         rows = conn.execute(stmt).mappings().all()
     return list(rows)
 
 
-def entreprises_status_counts() -> dict[str, int]:
+def entreprises_status_counts(user_id: int) -> dict[str, int]:
     """Compteurs globaux par statut (indépendants des filtres actifs), pour cartes/chips."""
     t = entreprises_table
     with get_engine().connect() as conn:
-        total = conn.execute(select(func.count()).select_from(t)).scalar_one()
+        total = conn.execute(
+            select(func.count()).select_from(t).where(t.c.user_id == user_id)
+        ).scalar_one()
         status_rows = conn.execute(
-            select(func.coalesce(t.c.status, "a_postuler").label("status"), func.count().label("n")).group_by(
-                func.coalesce(t.c.status, "a_postuler")
-            )
+            select(func.coalesce(t.c.status, "a_postuler").label("status"), func.count().label("n"))
+            .where(t.c.user_id == user_id)
+            .group_by(func.coalesce(t.c.status, "a_postuler"))
         ).all()
     counts = {"tous": total}
     for status, n in status_rows:
@@ -344,49 +482,64 @@ def entreprises_status_counts() -> dict[str, int]:
     return counts
 
 
-def naf_codes_used() -> list[dict[str, str]]:
+def naf_codes_used(user_id: int) -> list[dict[str, str]]:
     """Codes NAF distincts réellement présents en base (checklist filtre)."""
     t = entreprises_table
     with get_engine().connect() as conn:
         rows = conn.execute(
             select(t.c.naf_code, func.max(t.c.naf_libelle))
-            .where(t.c.naf_code.isnot(None), t.c.naf_code != "")
+            .where(t.c.user_id == user_id, t.c.naf_code.isnot(None), t.c.naf_code != "")
             .group_by(t.c.naf_code)
             .order_by(t.c.naf_code)
         ).all()
     return [{"code": code, "libelle": libelle or code} for code, libelle in rows]
 
 
-def update_entreprise(siret: str, fields: dict[str, Any]) -> bool:
-    existing = get_entreprise(siret)
-    if not existing:
-        return False
-    set_clause = ", ".join(f"{k} = :{k}" for k in fields)
-    params = dict(fields)
-    params["siret"] = siret
+def update_entreprise(user_id: int, siret: str, fields: dict[str, Any]) -> bool:
     with get_engine().begin() as conn:
-        conn.execute(text(f"UPDATE entreprises SET {set_clause} WHERE siret = :siret"), params)
-    logger.info("Entreprise %s mise à jour (%s)", siret, ", ".join(fields.keys()))
-    return True
+        result = conn.execute(
+            entreprises_table.update()
+            .where(
+                and_(
+                    entreprises_table.c.user_id == user_id,
+                    entreprises_table.c.siret == siret,
+                )
+            )
+            .values(**fields)
+        )
+    if result.rowcount > 0:
+        logger.info("Entreprise %s mise à jour (%s)", siret, ", ".join(fields.keys()))
+    return result.rowcount > 0
 
 
-def delete_entreprise(siret: str) -> None:
+def delete_entreprise(user_id: int, siret: str) -> None:
     with get_engine().begin() as conn:
-        conn.execute(text("DELETE FROM entreprises WHERE siret = :siret"), {"siret": siret})
+        conn.execute(
+            entreprises_table.delete().where(
+                and_(
+                    entreprises_table.c.user_id == user_id,
+                    entreprises_table.c.siret == siret,
+                )
+            )
+        )
     logger.info("Entreprise %s supprimée", siret)
 
 
-def reset_entreprises() -> int:
+def reset_entreprises(user_id: int) -> int:
     with get_engine().begin() as conn:
-        count = conn.execute(text("SELECT COUNT(*) AS n FROM entreprises")).mappings().first()["n"]
-        conn.execute(text("DELETE FROM entreprises"))
-    logger.warning("Table entreprises vidée (%d ligne(s))", count)
+        count = conn.execute(
+            text("SELECT COUNT(*) AS n FROM entreprises WHERE user_id = :user_id"),
+            {"user_id": user_id},
+        ).mappings().first()["n"]
+        conn.execute(text("DELETE FROM entreprises WHERE user_id = :user_id"), {"user_id": user_id})
+    logger.warning("Table entreprises vidée (%d ligne(s)) pour user_id=%s", count, user_id)
     return count
 
 
-def insert_entreprise_ignore(row: dict[str, Any]) -> bool:
+def insert_entreprise_ignore(user_id: int, row: dict[str, Any]) -> bool:
     values = {
         "siret": row["siret"],
+        "user_id": user_id,
         "siren": row.get("siren"),
         "denomination": row["denomination"],
         "adresse": row.get("adresse"),
@@ -410,10 +563,11 @@ def insert_entreprise_ignore(row: dict[str, Any]) -> bool:
     return inserted
 
 
-def insert_entreprise(row: dict[str, Any]) -> None:
-    """Insère une entreprise. Lève DuplicateSiretError si le SIRET existe déjà."""
+def insert_entreprise(user_id: int, row: dict[str, Any]) -> None:
+    """Insère une entreprise. Lève DuplicateSiretError si le SIRET existe déjà (pour cet utilisateur)."""
     values = {
         "siret": row["siret"],
+        "user_id": user_id,
         "siren": row.get("siren"),
         "denomination": row["denomination"],
         "adresse": row.get("adresse"),
@@ -445,17 +599,24 @@ def insert_entreprise(row: dict[str, Any]) -> None:
 
 
 def replace_entreprises_cleaned(
+    user_id: int,
     keep_rows: list[dict[str, Any]],
     keep_sirets: set[str],
 ) -> dict[str, int]:
-    """Supprime les SIRET non retenus et met à jour score / notes des gardés."""
+    """Supprime les SIRET non retenus et met à jour score / notes des gardés (pour cet utilisateur)."""
     with get_engine().begin() as conn:
         all_sirets = {
-            r["siret"] for r in conn.execute(text("SELECT siret FROM entreprises")).mappings().all()
+            r["siret"]
+            for r in conn.execute(
+                text("SELECT siret FROM entreprises WHERE user_id = :user_id"), {"user_id": user_id}
+            ).mappings().all()
         }
         to_delete = all_sirets - keep_sirets
         for siret in to_delete:
-            conn.execute(text("DELETE FROM entreprises WHERE siret = :siret"), {"siret": siret})
+            conn.execute(
+                text("DELETE FROM entreprises WHERE siret = :siret AND user_id = :user_id"),
+                {"siret": siret, "user_id": user_id},
+            )
 
         updated = 0
         for row in keep_rows:
@@ -469,7 +630,7 @@ def replace_entreprises_cleaned(
                         categorie_entreprise = COALESCE(:categorie_entreprise, categorie_entreprise),
                         categorie_juridique = COALESCE(:categorie_juridique, categorie_juridique),
                         nature = COALESCE(:nature, nature)
-                    WHERE siret = :siret
+                    WHERE siret = :siret AND user_id = :user_id
                     """
                 ),
                 {
@@ -480,6 +641,7 @@ def replace_entreprises_cleaned(
                     "categorie_juridique": row.get("categorie_juridique"),
                     "nature": row.get("nature"),
                     "siret": row["siret"],
+                    "user_id": user_id,
                 },
             )
             updated += result.rowcount
@@ -489,6 +651,7 @@ def replace_entreprises_cleaned(
 
 
 def mark_serpapi_result(
+    user_id: int,
     siret: str,
     site_web: str | None,
     linkedin_company: str | None,
@@ -502,7 +665,7 @@ def mark_serpapi_result(
                 SET site_web = COALESCE(NULLIF(:site_web, ''), site_web),
                     linkedin_company = COALESCE(NULLIF(:linkedin_company, ''), linkedin_company),
                     serpapi_scanned = :scanned
-                WHERE siret = :siret
+                WHERE siret = :siret AND user_id = :user_id
                 """
             ),
             {
@@ -510,24 +673,30 @@ def mark_serpapi_result(
                 "linkedin_company": linkedin_company or "",
                 "scanned": 1 if scanned else 0,
                 "siret": siret,
+                "user_id": user_id,
             },
         )
 
 
-def mark_serpapi_scanned_only(siret: str) -> None:
+def mark_serpapi_scanned_only(user_id: int, siret: str) -> None:
     with get_engine().begin() as conn:
         conn.execute(
-            text("UPDATE entreprises SET serpapi_scanned = 1 WHERE siret = :siret"), {"siret": siret}
+            text("UPDATE entreprises SET serpapi_scanned = 1 WHERE siret = :siret AND user_id = :user_id"),
+            {"siret": siret, "user_id": user_id},
         )
 
 
-def entreprises_to_serpapi(sirets: list[str] | None = None):
+def entreprises_to_serpapi(user_id: int, sirets: list[str] | None = None):
     with get_engine().connect() as conn:
         if sirets:
             placeholders = ", ".join(f":s{i}" for i in range(len(sirets)))
             params = {f"s{i}": v for i, v in enumerate(sirets)}
+            params["user_id"] = user_id
             rows = conn.execute(
-                text(f"SELECT siret, denomination, commune FROM entreprises WHERE siret IN ({placeholders})"),
+                text(
+                    f"SELECT siret, denomination, commune FROM entreprises "
+                    f"WHERE user_id = :user_id AND siret IN ({placeholders})"
+                ),
                 params,
             ).mappings().all()
         else:
@@ -535,61 +704,70 @@ def entreprises_to_serpapi(sirets: list[str] | None = None):
                 text(
                     """
                     SELECT siret, denomination, commune FROM entreprises
-                    WHERE serpapi_scanned = 0
+                    WHERE user_id = :user_id AND serpapi_scanned = 0
                     ORDER BY COALESCE(score_pertinence, 0) DESC, LOWER(denomination)
                     """
-                )
+                ),
+                {"user_id": user_id},
             ).mappings().all()
     return list(rows)
 
 
-def entreprises_sans_coords(limit: int = 40):
+def entreprises_sans_coords(user_id: int, limit: int = 40):
     with get_engine().connect() as conn:
         rows = conn.execute(
             text(
                 """
                 SELECT siret, adresse, commune FROM entreprises
-                WHERE (latitude IS NULL OR longitude IS NULL)
+                WHERE user_id = :user_id
+                  AND (latitude IS NULL OR longitude IS NULL)
                   AND COALESCE(geocode_failed, 0) = 0
                 ORDER BY COALESCE(score_pertinence, 0) DESC
                 LIMIT :limit
                 """
             ),
-            {"limit": limit},
+            {"limit": limit, "user_id": user_id},
         ).mappings().all()
     return list(rows)
 
 
-def count_entreprises_sans_coords() -> int:
+def count_entreprises_sans_coords(user_id: int) -> int:
     with get_engine().connect() as conn:
         n = conn.execute(
             text(
                 """
                 SELECT COUNT(*) AS n FROM entreprises
-                WHERE (latitude IS NULL OR longitude IS NULL)
+                WHERE user_id = :user_id
+                  AND (latitude IS NULL OR longitude IS NULL)
                   AND COALESCE(geocode_failed, 0) = 0
                 """
-            )
+            ),
+            {"user_id": user_id},
         ).mappings().first()["n"]
     return n
 
 
-def mark_geocode_failed(siret: str) -> None:
+def mark_geocode_failed(user_id: int, siret: str) -> None:
     with get_engine().begin() as conn:
         conn.execute(
-            text("UPDATE entreprises SET geocode_failed = 1 WHERE siret = :siret"), {"siret": siret}
+            text("UPDATE entreprises SET geocode_failed = 1 WHERE siret = :siret AND user_id = :user_id"),
+            {"siret": siret, "user_id": user_id},
         )
 
 
-def update_entreprise_coords(siret: str, latitude: float, longitude: float) -> None:
+def update_entreprise_coords(user_id: int, siret: str, latitude: float, longitude: float) -> None:
     with get_engine().begin() as conn:
         conn.execute(
-            text("UPDATE entreprises SET latitude = :lat, longitude = :lon WHERE siret = :siret"),
-            {"lat": latitude, "lon": longitude, "siret": siret},
+            text(
+                "UPDATE entreprises SET latitude = :lat, longitude = :lon "
+                "WHERE siret = :siret AND user_id = :user_id"
+            ),
+            {"lat": latitude, "lon": longitude, "siret": siret, "user_id": user_id},
         )
 
 
 def update_entreprise_travel(
+    user_id: int,
     siret: str,
     *,
     origin: str,
@@ -607,7 +785,7 @@ def update_entreprise_travel(
                     travel_distance_km = :distance_km,
                     travel_without_tolls = :without_tolls,
                     travel_updated_at = :updated_at
-                WHERE siret = :siret
+                WHERE siret = :siret AND user_id = :user_id
                 """
             ),
             {
@@ -617,11 +795,13 @@ def update_entreprise_travel(
                 "without_tolls": 1 if without_tolls else 0,
                 "updated_at": _now(),
                 "siret": siret,
+                "user_id": user_id,
             },
         )
 
 
 def entreprises_to_dirigeants(
+    user_id: int,
     sirets: list[str] | None = None,
     force: bool = False,
 ):
@@ -630,29 +810,41 @@ def entreprises_to_dirigeants(
         if sirets:
             placeholders = ", ".join(f":s{i}" for i in range(len(sirets)))
             params = {f"s{i}": v for i, v in enumerate(sirets)}
+            params["user_id"] = user_id
             rows = conn.execute(
-                text(f"SELECT {cols} FROM entreprises WHERE siret IN ({placeholders})"), params
+                text(
+                    f"SELECT {cols} FROM entreprises "
+                    f"WHERE user_id = :user_id AND siret IN ({placeholders})"
+                ),
+                params,
             ).mappings().all()
         elif force:
             rows = conn.execute(
-                text(f"SELECT {cols} FROM entreprises ORDER BY COALESCE(score_pertinence, 0) DESC, LOWER(denomination)")
+                text(
+                    f"SELECT {cols} FROM entreprises "
+                    f"WHERE user_id = :user_id "
+                    f"ORDER BY COALESCE(score_pertinence, 0) DESC, LOWER(denomination)"
+                ),
+                {"user_id": user_id},
             ).mappings().all()
         else:
             rows = conn.execute(
                 text(
                     f"""
                     SELECT {cols} FROM entreprises
-                    WHERE COALESCE(dirigeants_scanned, 0) = 0
+                    WHERE user_id = :user_id
+                      AND COALESCE(dirigeants_scanned, 0) = 0
                       AND (contact_prenom IS NULL OR TRIM(contact_prenom) = '')
                       AND (contact_nom IS NULL OR TRIM(contact_nom) = '')
                     ORDER BY COALESCE(score_pertinence, 0) DESC, LOWER(denomination)
                     """
-                )
+                ),
+                {"user_id": user_id},
             ).mappings().all()
     return list(rows)
 
 
-def apply_dirigeant(siret: str, fields: dict[str, Any]) -> None:
+def apply_dirigeant(user_id: int, siret: str, fields: dict[str, Any]) -> None:
     with get_engine().begin() as conn:
         conn.execute(
             text(
@@ -663,7 +855,7 @@ def apply_dirigeant(siret: str, fields: dict[str, Any]) -> None:
                     contact_poste = COALESCE(NULLIF(:poste, ''), contact_poste),
                     contact_source = COALESCE(NULLIF(:source, ''), 'dirigeant'),
                     dirigeants_scanned = 1
-                WHERE siret = :siret
+                WHERE siret = :siret AND user_id = :user_id
                 """
             ),
             {
@@ -672,11 +864,12 @@ def apply_dirigeant(siret: str, fields: dict[str, Any]) -> None:
                 "poste": fields.get("contact_poste") or "",
                 "source": fields.get("contact_source") or "dirigeant",
                 "siret": siret,
+                "user_id": user_id,
             },
         )
 
 
-def apply_contact(siret: str, fields: dict[str, Any]) -> None:
+def apply_contact(user_id: int, siret: str, fields: dict[str, Any]) -> None:
     """Met à jour le contact (RH/tech/dirigeant) sans toucher dirigeants_scanned."""
     with get_engine().begin() as conn:
         conn.execute(
@@ -688,7 +881,7 @@ def apply_contact(siret: str, fields: dict[str, Any]) -> None:
                     contact_poste = COALESCE(NULLIF(:poste, ''), contact_poste),
                     contact_linkedin = COALESCE(NULLIF(:linkedin, ''), contact_linkedin),
                     contact_source = COALESCE(NULLIF(:source, ''), contact_source)
-                WHERE siret = :siret
+                WHERE siret = :siret AND user_id = :user_id
                 """
             ),
             {
@@ -698,11 +891,13 @@ def apply_contact(siret: str, fields: dict[str, Any]) -> None:
                 "linkedin": fields.get("contact_linkedin") or "",
                 "source": fields.get("contact_source") or "",
                 "siret": siret,
+                "user_id": user_id,
             },
         )
 
 
 def apply_email_quality(
+    user_id: int,
     siret: str,
     *,
     email: str,
@@ -719,21 +914,32 @@ def apply_email_quality(
                     email_hunter_score = :hunter_score,
                     email_quality = :quality,
                     email_quality_note = :note
-                WHERE siret = :siret
+                WHERE siret = :siret AND user_id = :user_id
                 """
             ),
-            {"email": email, "hunter_score": hunter_score, "quality": quality, "note": note, "siret": siret},
+            {
+                "email": email,
+                "hunter_score": hunter_score,
+                "quality": quality,
+                "note": note,
+                "siret": siret,
+                "user_id": user_id,
+            },
         )
 
 
-def mark_dirigeants_scanned(siret: str) -> None:
+def mark_dirigeants_scanned(user_id: int, siret: str) -> None:
     with get_engine().begin() as conn:
         conn.execute(
-            text("UPDATE entreprises SET dirigeants_scanned = 1 WHERE siret = :siret"), {"siret": siret}
+            text(
+                "UPDATE entreprises SET dirigeants_scanned = 1 WHERE siret = :siret AND user_id = :user_id"
+            ),
+            {"siret": siret, "user_id": user_id},
         )
 
 
 def mark_email_sent(
+    user_id: int,
     siret: str,
     email: str,
     *,
@@ -752,7 +958,7 @@ def mark_email_sent(
                     email_subject = COALESCE(NULLIF(:subject, ''), email_subject),
                     email_body = COALESCE(NULLIF(:body, ''), email_body),
                     email_sent_at = :sent_at
-                WHERE siret = :siret
+                WHERE siret = :siret AND user_id = :user_id
                 """
             ),
             {
@@ -762,12 +968,14 @@ def mark_email_sent(
                 "body": body or "",
                 "sent_at": _now(),
                 "siret": siret,
+                "user_id": user_id,
             },
         )
     logger.info("Statut 'postule' pour %s (email=%s, msg-id=%s)", siret, email, message_id)
 
 
 def mark_relance_sent(
+    user_id: int,
     siret: str,
     *,
     message_id: str | None = None,
@@ -783,7 +991,7 @@ def mark_relance_sent(
                     last_relance_at = :relance_at,
                     email_message_id = COALESCE(NULLIF(:message_id, ''), email_message_id),
                     email_body = COALESCE(NULLIF(:body, ''), email_body)
-                WHERE siret = :siret
+                WHERE siret = :siret AND user_id = :user_id
                 """
             ),
             {
@@ -791,12 +999,13 @@ def mark_relance_sent(
                 "message_id": message_id or "",
                 "body": body or "",
                 "siret": siret,
+                "user_id": user_id,
             },
         )
     logger.info("Relance enregistrée pour %s (msg-id=%s)", siret, message_id)
 
 
-def list_candidatures_en_attente() -> list[dict[str, Any]]:
+def list_candidatures_en_attente(user_id: int) -> list[dict[str, Any]]:
     with get_engine().connect() as conn:
         rows = conn.execute(
             text(
@@ -805,16 +1014,18 @@ def list_candidatures_en_attente() -> list[dict[str, Any]]:
                        email_message_id, email_subject, email_sent_at,
                        reply_message_id, reply_class, relance_count, last_relance_at
                 FROM entreprises
-                WHERE status IN ('postule', 'relance')
+                WHERE user_id = :user_id
+                  AND status IN ('postule', 'relance')
                   AND email_sent_at IS NOT NULL
                 ORDER BY email_sent_at DESC
                 """
-            )
+            ),
+            {"user_id": user_id},
         ).mappings().all()
     return [dict(r) for r in rows]
 
 
-def list_entretiens_a_suivre() -> list[dict[str, Any]]:
+def list_entretiens_a_suivre(user_id: int) -> list[dict[str, Any]]:
     with get_engine().connect() as conn:
         rows = conn.execute(
             text(
@@ -823,7 +1034,8 @@ def list_entretiens_a_suivre() -> list[dict[str, Any]]:
                        contact_email, entretien_date, entretien_next_step, entretien_rappel_at,
                        notes
                 FROM entreprises
-                WHERE status IN ('entretien', 'offre')
+                WHERE user_id = :user_id
+                  AND status IN ('entretien', 'offre')
                 ORDER BY
                   CASE WHEN entretien_rappel_at IS NULL OR TRIM(entretien_rappel_at) = '' THEN 1 ELSE 0 END,
                   entretien_rappel_at ASC,
@@ -831,18 +1043,23 @@ def list_entretiens_a_suivre() -> list[dict[str, Any]]:
                   entretien_date ASC,
                   LOWER(denomination)
                 """
-            )
+            ),
+            {"user_id": user_id},
         ).mappings().all()
     return [dict(r) for r in rows]
 
 
-def list_processed_reply_ids() -> set[str]:
+def list_processed_reply_ids(user_id: int) -> set[str]:
     with get_engine().connect() as conn:
-        rows = conn.execute(text("SELECT message_id FROM processed_replies")).mappings().all()
+        rows = conn.execute(
+            text("SELECT message_id FROM processed_replies WHERE user_id = :user_id"),
+            {"user_id": user_id},
+        ).mappings().all()
     return {(r["message_id"] or "").lower() for r in rows if r["message_id"]}
 
 
 def mark_reply_classified(
+    user_id: int,
     siret: str,
     classification: str,
     *,
@@ -857,7 +1074,7 @@ def mark_reply_classified(
     offre / entretien / refus → met à jour le statut.
     autre → garde le statut actuel, note seulement.
     """
-    ent = get_entreprise(siret)
+    ent = get_entreprise(user_id, siret)
     if not ent:
         return
 
@@ -884,7 +1101,7 @@ def mark_reply_classified(
                         reply_from = :from_email,
                         reply_subject = :subject,
                         notes = :notes
-                    WHERE siret = :siret
+                    WHERE siret = :siret AND user_id = :user_id
                     """
                 ),
                 {
@@ -895,6 +1112,7 @@ def mark_reply_classified(
                     "subject": subject,
                     "notes": notes,
                     "siret": siret,
+                    "user_id": user_id,
                 },
             )
         else:
@@ -908,7 +1126,7 @@ def mark_reply_classified(
                         reply_from = :from_email,
                         reply_subject = :subject,
                         notes = :notes
-                    WHERE siret = :siret
+                    WHERE siret = :siret AND user_id = :user_id
                     """
                 ),
                 {
@@ -919,19 +1137,60 @@ def mark_reply_classified(
                     "subject": subject,
                     "notes": notes,
                     "siret": siret,
+                    "user_id": user_id,
                 },
             )
 
         _insert_replace(
             conn,
             processed_replies_table,
-            {"message_id": message_id, "siret": siret, "classification": classification, "processed_at": _now()},
+            {
+                "message_id": message_id,
+                "user_id": user_id,
+                "siret": siret,
+                "classification": classification,
+                "processed_at": _now(),
+            },
             "message_id",
         )
 
     logger.info(
         "Réponse classée pour %s → %s (status_updated=%s)", siret, classification, apply_status,
     )
+
+
+def get_usage_count(user_id: int, period: str, column: str) -> int:
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            select(usage_counters_table.c[column]).where(
+                and_(usage_counters_table.c.user_id == user_id, usage_counters_table.c.period == period)
+            )
+        ).first()
+    return row[0] if row else 0
+
+
+def increment_usage_count(user_id: int, period: str, column: str) -> None:
+    with get_engine().begin() as conn:
+        existing = conn.execute(
+            select(usage_counters_table.c.user_id).where(
+                and_(usage_counters_table.c.user_id == user_id, usage_counters_table.c.period == period)
+            )
+        ).first()
+        if existing:
+            conn.execute(
+                usage_counters_table.update()
+                .where(and_(usage_counters_table.c.user_id == user_id, usage_counters_table.c.period == period))
+                .values(**{column: usage_counters_table.c[column] + 1})
+            )
+        else:
+            conn.execute(
+                usage_counters_table.insert().values(user_id=user_id, period=period, **{column: 1})
+            )
+
+
+def get_app_config_value(key: str, default: str = "") -> str:
+    """Lit une valeur de config globale (table `config`, admin-configurable)."""
+    return get_config_value(key, default)
 
 
 def get_config_value(key: str, default: str = "") -> str:
@@ -959,6 +1218,39 @@ def get_all_config() -> dict[str, str]:
     return {row["key"]: row["value"] for row in rows}
 
 
+def get_user_config_value(user_id: int, key: str, default: str = "") -> str:
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            select(user_config_table.c.value).where(
+                and_(user_config_table.c.user_id == user_id, user_config_table.c.key == key)
+            )
+        ).first()
+    return row[0] if row else default
+
+
+def set_user_config_values(user_id: int, data: dict[str, Any]) -> None:
+    with get_engine().begin() as conn:
+        for key, value in data.items():
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False)
+            _insert_replace(
+                conn, user_config_table,
+                {"user_id": user_id, "key": key, "value": str(value) if value is not None else ""},
+                pk_col=["user_id", "key"],
+            )
+    logger.info("Config utilisateur mise à jour (user_id=%s, %d clé(s)) : %s", user_id, len(data), ", ".join(data.keys()))
+
+
+def get_all_user_config(user_id: int) -> dict[str, str]:
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            select(user_config_table.c.key, user_config_table.c.value).where(
+                user_config_table.c.user_id == user_id
+            )
+        ).all()
+    return {k: v for k, v in rows}
+
+
 def env_or_config(key: str, *aliases: str) -> str:
     """Lit d'abord .env, puis la config DB (avec alias éventuels)."""
     import os
@@ -969,6 +1261,21 @@ def env_or_config(key: str, *aliases: str) -> str:
             return val.strip()
     for name in (key, *aliases):
         val = get_config_value(name)
+        if val:
+            return val.strip()
+    return ""
+
+
+def env_or_user_config(user_id: int, key: str, *aliases: str) -> str:
+    """Comme `env_or_config`, mais lit la config par utilisateur (`user_config`)."""
+    import os
+
+    for name in (key, *aliases):
+        val = os.getenv(name)
+        if val:
+            return val.strip()
+    for name in (key, *aliases):
+        val = get_user_config_value(user_id, name)
         if val:
             return val.strip()
     return ""

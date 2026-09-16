@@ -39,6 +39,7 @@ MIN_EMPLOYEES_BY_CODE = {
 
 
 def run_prune(
+    user_id: int,
     *,
     min_employees: int = 3,
     max_travel_min: float = 45.0,
@@ -55,7 +56,7 @@ def run_prune(
        puis supprime celles au-delà de max_travel_min.
     """
     t_start = time.monotonic()
-    origin_label = (origin or db.get_config_value("point_ref", "La Crau") or "La Crau").strip()
+    origin_label = (origin or db.get_user_config_value(user_id, "point_ref", "La Crau") or "La Crau").strip()
     origin_norm = normalize_location_label(origin_label)
 
     logger.info(
@@ -71,7 +72,7 @@ def run_prune(
     if not origin_coords:
         raise ValueError(f"Origine introuvable au géocodage : {origin_label}")
 
-    rows = [dict(r) for r in db.list_entreprises()]
+    rows = [dict(r) for r in db.list_entreprises(user_id)]
     initial_count = len(rows)
     protected_sirets = {item["siret"] for item in rows if _is_prune_protected(item)}
     skipped_protected = len(protected_sirets)
@@ -86,15 +87,15 @@ def run_prune(
             continue
         code = (item.get("effectif_code") or "").strip()
         if code == "NN" and delete_unknown_employees:
-            db.delete_entreprise(item["siret"])
+            db.delete_entreprise(user_id, item["siret"])
             deleted_small += 1
             continue
         min_emp = MIN_EMPLOYEES_BY_CODE.get(code)
         if min_emp is not None and min_emp < min_employees:
-            db.delete_entreprise(item["siret"])
+            db.delete_entreprise(user_id, item["siret"])
             deleted_small += 1
 
-    kept_rows = [dict(r) for r in db.list_entreprises()]
+    kept_rows = [dict(r) for r in db.list_entreprises(user_id)]
     logger.info(
         "Prune effectif — %d supprimée(s), %d restante(s)",
         deleted_small,
@@ -129,7 +130,7 @@ def run_prune(
             duration = float(item["travel_duration_min"])
             cached_hits += 1
             if duration > max_travel_min:
-                db.delete_entreprise(siret)
+                db.delete_entreprise(user_id, siret)
                 deleted_travel += 1
             processed += 1
             continue
@@ -140,13 +141,13 @@ def run_prune(
             coords = geocode_adresse(item.get("adresse"), item.get("commune"))
             if coords:
                 lat, lon = coords
-                db.update_entreprise_coords(siret, lat, lon)
+                db.update_entreprise_coords(user_id, siret, lat, lon)
             else:
                 logger.warning("Géocodage échoué pour %s — trajet indisponible", nom)
                 unavailable += 1
                 processed += 1
                 if delete_unavailable_travel:
-                    db.delete_entreprise(siret)
+                    db.delete_entreprise(user_id, siret)
                     deleted_travel += 1
                 continue
 
@@ -162,12 +163,13 @@ def run_prune(
             logger.warning("Route introuvable pour %s", nom)
             unavailable += 1
             if delete_unavailable_travel:
-                db.delete_entreprise(siret)
+                db.delete_entreprise(user_id, siret)
                 deleted_travel += 1
             continue
 
         duration = float(route["duration_min"])
         db.update_entreprise_travel(
+            user_id,
             siret,
             origin=origin_label,
             duration_min=duration,
@@ -177,13 +179,13 @@ def run_prune(
         computed += 1
 
         if duration > max_travel_min:
-            db.delete_entreprise(siret)
+            db.delete_entreprise(user_id, siret)
             deleted_travel += 1
 
         if sleep > 0:
             time.sleep(sleep)
 
-    final_count = len(db.list_entreprises())
+    final_count = len(db.list_entreprises(user_id))
     elapsed = time.monotonic() - t_start
 
     result = {

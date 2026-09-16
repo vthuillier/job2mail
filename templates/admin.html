@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0f1419">
+<title>Admin — JobToMail</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --bg-elevated: #1a222d;
+    --border: #2a3544;
+    --text: #e8eef4;
+    --muted: #8b9aab;
+    --teal: #2dd4bf;
+    --teal-dim: rgba(45, 212, 191, 0.12);
+    --font: system-ui, sans-serif;
+    --mono: ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    min-height: 100vh;
+    padding: 32px 24px;
+    font-family: var(--font);
+    color: var(--text);
+    background: var(--bg);
+  }
+
+  h1 { font-size: 1.3rem; margin-bottom: 20px; }
+
+  table {
+    width: 100%;
+    max-width: 900px;
+    border-collapse: collapse;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.88rem;
+  }
+
+  th {
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+  }
+
+  tr:last-child td { border-bottom: none; }
+
+  .quota-form {
+    max-width: 420px;
+    margin-top: 32px;
+    padding: 18px 20px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+
+  .quota-form h2 { font-size: 1rem; margin-bottom: 14px; }
+
+  .quota-form label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .quota-form input {
+    width: 100%;
+    margin-bottom: 14px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: #121820;
+    color: var(--text);
+    font: inherit;
+  }
+
+  .quota-form button {
+    padding: 9px 16px;
+    border: none;
+    border-radius: 8px;
+    background: var(--teal);
+    color: #042f2e;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  #quota-status {
+    margin-top: 10px;
+    font-size: 0.82rem;
+    color: var(--teal);
+  }
+</style>
+</head>
+<body>
+  <h1>Panneau admin</h1>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Créé le</th>
+        <th>Admin</th>
+        <th>Scans (mois)</th>
+        <th>Emails (mois)</th>
+      </tr>
+    </thead>
+    <tbody id="users-body"></tbody>
+  </table>
+
+  <div class="quota-form">
+    <h2>Quotas mensuels globaux</h2>
+    <form id="quota-form">
+      <label for="scan_limit">Limite scans / mois</label>
+      <input id="scan_limit" name="scan_limit" type="number" min="0" required>
+      <label for="email_limit">Limite emails / mois</label>
+      <input id="email_limit" name="email_limit" type="number" min="0" required>
+      <button type="submit">Enregistrer</button>
+    </form>
+    <div id="quota-status"></div>
+  </div>
+
+  <script>
+    async function loadUsers() {
+      const res = await fetch("/admin/api/users");
+      const users = await res.json();
+      const body = document.getElementById("users-body");
+      // Build rows via DOM APIs + textContent (never innerHTML/template-string
+      // interpolation) so that attacker-controlled fields — email in
+      // particular, which only requires "@" in request_magic_link — cannot
+      // inject HTML/JS into this authenticated admin page (stored XSS).
+      body.replaceChildren(...users.map(u => {
+        const tr = document.createElement("tr");
+        const values = [
+          u.email,
+          u.created_at || "",
+          u.is_admin ? "oui" : "non",
+          u.scans_count ?? 0,
+          u.emails_count ?? 0,
+        ];
+        for (const v of values) {
+          const td = document.createElement("td");
+          td.textContent = String(v);
+          tr.appendChild(td);
+        }
+        return tr;
+      }));
+    }
+
+    document.getElementById("quota-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const scan_limit = document.getElementById("scan_limit").value;
+      const email_limit = document.getElementById("email_limit").value;
+      const res = await fetch("/admin/api/quotas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scan_limit: Number(scan_limit), email_limit: Number(email_limit) }),
+      });
+      document.getElementById("quota-status").textContent = res.ok ? "Quotas mis à jour." : "Erreur.";
+    });
+
+    loadUsers();
+  </script>
+</body>
+</html>

@@ -13,6 +13,7 @@ from flask import Blueprint, Response, jsonify, request
 
 from jobtomail import db
 from jobtomail.constants import TRANCHE_EFFECTIFS
+from jobtomail.routes.auth import current_user_id
 from jobtomail.services.geo import geocode_adresse, get_route_info, normalize_location_label
 from jobtomail.services.pdf_export import build_entreprise_pdf, build_entreprises_pdf
 from jobtomail.services.relances import list_relances_dues, relance_status
@@ -64,7 +65,11 @@ def _pdf_slug(name: str | None) -> str:
 
 def _current_travel_origin(payload: dict | None = None) -> str:
     payload = payload or {}
-    return (payload.get("origin") or db.get_config_value("point_ref", "La Crau") or "La Crau").strip()
+    return (
+        payload.get("origin")
+        or db.get_user_config_value(current_user_id(), "point_ref", "La Crau")
+        or "La Crau"
+    ).strip()
 
 
 def _to_float(raw: str | None) -> float | None:
@@ -110,7 +115,7 @@ def get_entreprises():
     per_page = max(1, min(per_page, 500))
 
     origin = _current_travel_origin() if filters["travel_max_min"] is not None else None
-    rows, total = db.list_entreprises_page(filters, origin, page, per_page)
+    rows, total = db.list_entreprises_page(current_user_id(), filters, origin, page, per_page)
 
     entreprises = []
     for r in rows:
@@ -134,8 +139,9 @@ def get_entreprises():
 @bp.route("/api/entreprises/stats", methods=["GET"])
 def get_entreprises_stats():
     """Compteurs globaux (cartes stats + badges chips) — indépendants des filtres actifs."""
-    counts = db.entreprises_status_counts()
-    dues = len(list_relances_dues())
+    user_id = current_user_id()
+    counts = db.entreprises_status_counts(user_id)
+    dues = len(list_relances_dues(user_id))
     return jsonify({"counts": counts, "relances_dues": dues})
 
 
@@ -144,14 +150,14 @@ def get_entreprises_lite():
     """Liste allégée non paginée (carte + calcul candidats trajet) — respecte les mêmes filtres."""
     filters = _parse_filters_from_query()
     origin = _current_travel_origin()
-    rows = db.list_entreprises_lite(filters, origin)
+    rows = db.list_entreprises_lite(current_user_id(), filters, origin)
     return jsonify({"entreprises": [dict(r) for r in rows]})
 
 
 @bp.route("/api/entreprises/naf-codes-used", methods=["GET"])
 def get_naf_codes_used():
     """Codes NAF distincts en base — alimente la checklist du filtre NAF."""
-    return jsonify({"codes": db.naf_codes_used()})
+    return jsonify({"codes": db.naf_codes_used(current_user_id())})
 
 
 @bp.route("/api/entreprises", methods=["POST"])
@@ -162,17 +168,18 @@ def create_entreprise():
     if not denomination:
         return jsonify({"error": "La dénomination est obligatoire"}), 400
 
+    user_id = current_user_id()
     siret = _normalize_siret(data.get("siret"))
     if siret:
         if not _SIRET_RE.match(siret):
             return jsonify({"error": "SIRET invalide (14 chiffres attendus)"}), 400
-        if db.get_entreprise(siret):
+        if db.get_entreprise(user_id, siret):
             return jsonify({"error": f"Une entreprise avec le SIRET {siret} existe déjà"}), 409
     else:
         # Garantir l'unicité d'un identifiant synthétique
         for _ in range(5):
             candidate = _make_manual_siret()
-            if not db.get_entreprise(candidate):
+            if not db.get_entreprise(user_id, candidate):
                 siret = candidate
                 break
         if not siret:
@@ -220,11 +227,11 @@ def create_entreprise():
     }
 
     try:
-        db.insert_entreprise(row)
+        db.insert_entreprise(user_id, row)
     except db.DuplicateSiretError:
         return jsonify({"error": f"Une entreprise avec le SIRET {siret} existe déjà"}), 409
 
-    created = db.get_entreprise(siret)
+    created = db.get_entreprise(user_id, siret)
     item = dict(created) if created else row
     item["relance_info"] = relance_status(item)
     logger.info("POST /api/entreprises — %s (%s)", denomination, siret)
@@ -233,26 +240,27 @@ def create_entreprise():
 
 @bp.route("/api/entretiens", methods=["GET"])
 def get_entretiens():
-    rows = db.list_entretiens_a_suivre()
+    rows = db.list_entretiens_a_suivre(current_user_id())
     return jsonify({"ok": True, "count": len(rows), "entretiens": rows})
 
 
 @bp.route("/api/entreprises/geocode", methods=["POST"])
 def geocode_entreprises():
     """Géocode par lots les entreprises sans coordonnées (BAN + repli commune)."""
+    user_id = current_user_id()
     data = request.get_json(force=True) or {}
     limit = min(int(data.get("limit") or 40), 80)
-    rows = db.entreprises_sans_coords(limit)
+    rows = db.entreprises_sans_coords(user_id, limit)
     geocoded = 0
     for row in rows:
         coords = geocode_adresse(row["adresse"], row["commune"])
         if coords:
-            db.update_entreprise_coords(row["siret"], coords[0], coords[1])
+            db.update_entreprise_coords(user_id, row["siret"], coords[0], coords[1])
             geocoded += 1
         else:
-            db.mark_geocode_failed(row["siret"])
+            db.mark_geocode_failed(user_id, row["siret"])
         time.sleep(0.12)
-    remaining = db.count_entreprises_sans_coords()
+    remaining = db.count_entreprises_sans_coords(user_id)
     logger.info("Géocodage — %d/%d OK, %d restant(s)", geocoded, len(rows), remaining)
     return jsonify({"ok": True, "geocoded": geocoded, "processed": len(rows), "remaining": remaining})
 
@@ -260,6 +268,7 @@ def geocode_entreprises():
 @bp.route("/api/entreprises/trajets", methods=["POST"])
 def compute_travel_times():
     """Calcule les trajets routiers sans péage depuis le point de référence."""
+    user_id = current_user_id()
     data = request.get_json(force=True) or {}
     sirets = [str(s).strip() for s in (data.get("sirets") or []) if str(s).strip()]
     force = bool(data.get("force"))
@@ -270,7 +279,7 @@ def compute_travel_times():
     if not origin_coords:
         return jsonify({"error": f"Point de départ introuvable : {origin_label}"}), 400
 
-    rows = db.list_entreprises()
+    rows = db.list_entreprises(user_id)
     if sirets:
         wanted = set(sirets)
         rows = [row for row in rows if row["siret"] in wanted]
@@ -305,7 +314,7 @@ def compute_travel_times():
             coords = geocode_adresse(item.get("adresse"), item.get("commune"))
             if coords:
                 lat, lon = coords
-                db.update_entreprise_coords(siret, lat, lon)
+                db.update_entreprise_coords(user_id, siret, lat, lon)
             else:
                 unavailable += 1
                 results[siret] = {"error": "Adresse entreprise introuvable"}
@@ -319,6 +328,7 @@ def compute_travel_times():
             continue
 
         db.update_entreprise_travel(
+            user_id,
             siret,
             origin=origin_label,
             duration_min=route["duration_min"],
@@ -354,8 +364,9 @@ def compute_travel_times():
 
 @bp.route("/api/entreprises/<siret>", methods=["GET", "PUT", "DELETE"])
 def handle_entreprise(siret: str):
+    user_id = current_user_id()
     if request.method == "GET":
-        entreprise = db.get_entreprise(siret)
+        entreprise = db.get_entreprise(user_id, siret)
         if not entreprise:
             return jsonify({"error": "Entreprise introuvable"}), 404
         item = dict(entreprise)
@@ -364,11 +375,11 @@ def handle_entreprise(siret: str):
 
     if request.method == "DELETE":
         logger.info("DELETE entreprise %s", siret)
-        db.delete_entreprise(siret)
+        db.delete_entreprise(user_id, siret)
         return jsonify({"ok": True})
 
     data = request.get_json(force=True) or {}
-    existing = db.get_entreprise(siret)
+    existing = db.get_entreprise(user_id, siret)
     if not existing:
         logger.warning("PUT entreprise introuvable : %s", siret)
         return jsonify({"error": "Entreprise introuvable"}), 404
@@ -380,14 +391,14 @@ def handle_entreprise(siret: str):
         else:
             fields[f] = existing[f] if f in existing.keys() else None
 
-    db.update_entreprise(siret, fields)
+    db.update_entreprise(user_id, siret, fields)
     return jsonify({"ok": True})
 
 
 @bp.route("/api/entreprises/<siret>/export.pdf", methods=["GET"])
 def export_entreprise_pdf(siret: str):
     """Fiche PDF A4 d'une entreprise."""
-    entreprise = db.get_entreprise(siret)
+    entreprise = db.get_entreprise(current_user_id(), siret)
     if not entreprise:
         return jsonify({"error": "Entreprise introuvable"}), 404
     pdf_bytes = build_entreprise_pdf(dict(entreprise))
@@ -408,7 +419,7 @@ def export_entreprises_pdf():
         return jsonify({"error": "Aucune entreprise sélectionnée"}), 400
 
     wanted = set(sirets)
-    rows = [dict(r) for r in db.list_entreprises() if r["siret"] in wanted]
+    rows = [dict(r) for r in db.list_entreprises(current_user_id()) if r["siret"] in wanted]
     if not rows:
         return jsonify({"error": "Entreprises introuvables"}), 404
 

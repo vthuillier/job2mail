@@ -5,31 +5,93 @@ import json
 from jobtomail import db
 
 
+def test_schema_has_multi_tenant_columns(temp_db):
+    from sqlalchemy import inspect
+    from jobtomail.db import get_engine
+
+    inspector = inspect(get_engine())
+    user_cols = {c["name"] for c in inspector.get_columns("users")}
+    assert {"id", "email", "google_sub", "created_at", "is_admin"} <= user_cols
+
+    entreprise_cols = {c["name"] for c in inspector.get_columns("entreprises")}
+    assert "user_id" in entreprise_cols
+
+    job_cols = {c["name"] for c in inspector.get_columns("jobs")}
+    assert "user_id" in job_cols
+
+    reply_cols = {c["name"] for c in inspector.get_columns("processed_replies")}
+    assert "user_id" in reply_cols
+
+
 def test_insert_get_update_delete_entreprise(temp_db):
     db.insert_entreprise(
+        1,
         {
             "siret": "33333333300001",
             "siren": "333333333",
             "denomination": "Test Corp",
             "adresse": "1 rue du Test",
             "commune": "Toulon",
-        }
+        },
     )
 
-    row = db.get_entreprise("33333333300001")
+    row = db.get_entreprise(1, "33333333300001")
     assert row is not None
     assert row["denomination"] == "Test Corp"
 
-    updated = db.update_entreprise("33333333300001", {"status": "postule"})
+    updated = db.update_entreprise(1, "33333333300001", {"status": "postule"})
     assert updated is True
-    assert db.get_entreprise("33333333300001")["status"] == "postule"
+    assert db.get_entreprise(1, "33333333300001")["status"] == "postule"
 
-    db.delete_entreprise("33333333300001")
-    assert db.get_entreprise("33333333300001") is None
+    db.delete_entreprise(1, "33333333300001")
+    assert db.get_entreprise(1, "33333333300001") is None
 
 
 def test_update_entreprise_unknown_siret_returns_false(temp_db):
-    assert db.update_entreprise("00000000000000", {"status": "postule"}) is False
+    assert db.update_entreprise(1, "00000000000000", {"status": "postule"}) is False
+
+
+def test_entreprise_crud_is_scoped_by_user(temp_db):
+    db.insert_entreprise(1, {
+        "siret": "33333333300001", "siren": "333333333",
+        "denomination": "Test Corp", "adresse": "1 rue du Test",
+        "commune": "Toulon",
+    })
+    db.insert_entreprise(2, {
+        "siret": "33333333300001", "siren": "333333333",
+        "denomination": "Autre Corp pour user 2", "adresse": "2 rue Autre",
+        "commune": "Nice",
+    })
+
+    row1 = db.get_entreprise(1, "33333333300001")
+    row2 = db.get_entreprise(2, "33333333300001")
+    assert row1["denomination"] == "Test Corp"
+    assert row2["denomination"] == "Autre Corp pour user 2"
+
+    assert db.update_entreprise(1, "33333333300001", {"status": "postule"}) is True
+    assert db.get_entreprise(1, "33333333300001")["status"] == "postule"
+    assert db.get_entreprise(2, "33333333300001")["status"] != "postule"
+
+    db.delete_entreprise(1, "33333333300001")
+    assert db.get_entreprise(1, "33333333300001") is None
+    assert db.get_entreprise(2, "33333333300001") is not None
+
+
+def test_list_entreprises_is_scoped_by_user(temp_db):
+    db.insert_entreprise(1, {"siret": "11111111100001", "denomination": "A", "adresse": "", "commune": ""})
+    db.insert_entreprise(2, {"siret": "22222222200001", "denomination": "B", "adresse": "", "commune": ""})
+
+    assert [r["siret"] for r in db.list_entreprises(1)] == ["11111111100001"]
+    assert [r["siret"] for r in db.list_entreprises(2)] == ["22222222200001"]
+
+
+def test_job_rows_are_scoped_by_user(temp_db):
+    db.create_job_row(1, "job-a", "scan_sirene")
+    db.create_job_row(2, "job-b", "scan_sirene")
+
+    assert db.get_job_row(1, "job-a") is not None
+    assert db.get_job_row(1, "job-b") is None
+    assert db.get_job_row(2, "job-b") is not None
 
 
 def test_config_get_set_roundtrip(temp_db):
@@ -74,3 +136,13 @@ def test_load_nafs_invalid_json_falls_back(temp_db):
 
     cfg = {"nafs": "not json"}
     assert db.load_nafs(cfg) == dict(DEFAULT_NAF_CODES)
+
+
+def test_user_config_roundtrip_is_scoped(temp_db):
+    db.set_user_config_values(1, {"candidate_name": "Jean Dupont"})
+    db.set_user_config_values(2, {"candidate_name": "Marie Curie"})
+
+    assert db.get_user_config_value(1, "candidate_name") == "Jean Dupont"
+    assert db.get_user_config_value(2, "candidate_name") == "Marie Curie"
+    assert db.get_user_config_value(1, "missing_key", "default") == "default"
+    assert db.get_all_user_config(1)["candidate_name"] == "Jean Dupont"

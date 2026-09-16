@@ -127,14 +127,14 @@ def _pick_best_etablissement(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return best
 
 
-def clean_entreprises(*, apply_effectif_filter: bool = True) -> dict[str, Any]:
+def clean_entreprises(user_id: int, *, apply_effectif_filter: bool = True) -> dict[str, Any]:
     """
     Nettoie la base :
     1. filtre les trop petites structures
     2. déduplique par SIREN (garde le meilleur établissement)
     3. calcule un score de pertinence
     """
-    rows = [dict(r) for r in db.list_entreprises()]
+    rows = [dict(r) for r in db.list_entreprises(user_id)]
     before = len(rows)
     logger.info("Nettoyage — %d entreprise(s) en entrée", before)
 
@@ -184,7 +184,7 @@ def clean_entreprises(*, apply_effectif_filter: bool = True) -> dict[str, Any]:
     try:
         from jobtomail.services.cv_profile import extract_cv_profile
 
-        profile = extract_cv_profile()
+        profile = extract_cv_profile(user_id)
         cv_keywords = profile["keywords"] if profile else None
     except Exception:
         logger.exception("Extraction profil CV indisponible — scoring sans mots-clés")
@@ -197,7 +197,7 @@ def clean_entreprises(*, apply_effectif_filter: bool = True) -> dict[str, Any]:
     )
 
     keep_sirets = {r["siret"] for r in deduped}
-    stats = db.replace_entreprises_cleaned(deduped, keep_sirets)
+    stats = db.replace_entreprises_cleaned(user_id, deduped, keep_sirets)
 
     logger.info(
         "Nettoyage terminé — avant=%d après=%d exclus_effectif=%d dedup=%d",

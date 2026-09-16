@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Column, Float, Index, Integer, MetaData, String, Table, Text, text
+from sqlalchemy import (
+    Column,
+    Float,
+    Index,
+    Integer,
+    MetaData,
+    PrimaryKeyConstraint,
+    String,
+    Table,
+    Text,
+    text,
+)
 
 metadata = MetaData()
 
@@ -13,10 +24,30 @@ config = Table(
     Column("value", Text),
 )
 
+user_config = Table(
+    "user_config",
+    metadata,
+    Column("user_id", Integer, primary_key=True),
+    Column("key", String(255), primary_key=True),
+    Column("value", Text),
+)
+
+users = Table(
+    "users",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("email", String(255), nullable=False, unique=True),
+    Column("google_sub", String(255), unique=True),
+    Column("created_at", Text),
+    Column("is_admin", Integer, server_default=text("0")),
+    Column("consent_at", Text),
+)
+
 entreprises = Table(
     "entreprises",
     metadata,
-    Column("siret", String(20), primary_key=True),
+    Column("siret", String(20)),
+    Column("user_id", Integer, nullable=False),
     Column("siren", String(20)),
     Column("denomination", Text, nullable=False),
     Column("adresse", Text),
@@ -71,6 +102,7 @@ entreprises = Table(
     Column("travel_distance_km", Float),
     Column("travel_without_tolls", Integer, server_default=text("0")),
     Column("travel_updated_at", Text),
+    PrimaryKeyConstraint("user_id", "siret", name="pk_entreprises"),
 )
 
 ix_entreprises_score_denom = Index(
@@ -81,15 +113,25 @@ processed_replies = Table(
     "processed_replies",
     metadata,
     Column("message_id", String(255), primary_key=True),
+    Column("user_id", Integer, nullable=False),
     Column("siret", String(20)),
     Column("classification", Text),
     Column("processed_at", Text),
+)
+
+user_google_tokens = Table(
+    "user_google_tokens",
+    metadata,
+    Column("user_id", Integer, primary_key=True),
+    Column("refresh_token_encrypted", Text, nullable=False),
+    Column("updated_at", Text),
 )
 
 jobs = Table(
     "jobs",
     metadata,
     Column("id", String(64), primary_key=True),
+    Column("user_id", Integer, nullable=False),
     Column("kind", Text, nullable=False),
     Column("status", Text, nullable=False, server_default=text("'queued'")),
     Column("params", Text),
@@ -98,4 +140,13 @@ jobs = Table(
     Column("error", Text),
     Column("created_at", Text),
     Column("updated_at", Text),
+)
+
+usage_counters = Table(
+    "usage_counters",
+    metadata,
+    Column("user_id", Integer, primary_key=True),
+    Column("period", String(7), primary_key=True),  # "YYYY-MM"
+    Column("scans_count", Integer, server_default=text("0")),
+    Column("emails_count", Integer, server_default=text("0")),
 )

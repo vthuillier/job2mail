@@ -324,6 +324,16 @@
   }
   @media (max-width: 600px) { .naf-add { grid-template-columns: 1fr; } }
 
+  .adv-settings { margin-top: 10px; }
+  .adv-settings > summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 0.82rem;
+    user-select: none;
+  }
+  .adv-settings > summary:hover { color: var(--text); }
+  .adv-settings .naf-add { margin-top: 10px; }
+
   .config-wrap { max-width: 720px; margin: 0 auto; }
   .config-section { margin-bottom: 28px; }
   .config-section h3 {

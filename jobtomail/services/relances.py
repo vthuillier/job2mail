@@ -125,9 +125,9 @@ def relance_status(ent: dict[str, Any] | Any) -> dict[str, Any]:
     return base
 
 
-def list_relances_dues() -> list[dict[str, Any]]:
+def list_relances_dues(user_id: int) -> list[dict[str, Any]]:
     dues: list[dict[str, Any]] = []
-    for ent in db.list_candidatures_en_attente():
+    for ent in db.list_candidatures_en_attente(user_id):
         info = relance_status(ent)
         if info.get("due") and not info.get("blocked"):
             dues.append({**ent, **info})

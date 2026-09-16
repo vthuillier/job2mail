@@ -48,9 +48,9 @@ def _extract_keywords_heuristic(text: str) -> list[str]:
     return sorted({skill for skill in _HEURISTIC_SKILLS if skill in lowered})
 
 
-def extract_cv_profile(force: bool = False) -> dict[str, Any] | None:
+def extract_cv_profile(user_id: int, force: bool = False) -> dict[str, Any] | None:
     """
-    Profil CV mis en cache (table config, clé "cv_profile").
+    Profil CV mis en cache (table user_config, clé "cv_profile", par utilisateur).
     Re-extrait seulement si cv.pdf a changé (mtime) ou force=True.
     Retourne None si cv.pdf est absent.
     """
@@ -59,7 +59,7 @@ def extract_cv_profile(force: bool = False) -> dict[str, Any] | None:
 
     mtime = CV_PATH.stat().st_mtime
     if not force:
-        cached = db.get_config_value("cv_profile")
+        cached = db.get_user_config_value(user_id, "cv_profile")
         if cached:
             try:
                 import json
@@ -86,6 +86,6 @@ def extract_cv_profile(force: bool = False) -> dict[str, Any] | None:
         "extracted_at": datetime.now(UTC).isoformat(),
         "cv_mtime": mtime,
     }
-    db.set_config_values({"cv_profile": profile})
+    db.set_user_config_values(user_id, {"cv_profile": profile})
     logger.info("Profil CV extrait (%s) — %d mot(s)-clé(s)", source, len(keywords))
     return profile

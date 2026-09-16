@@ -8,7 +8,9 @@ import logging
 from flask import Blueprint, jsonify, request
 
 from jobtomail import db
-from jobtomail.db import env_or_config, get_entreprise
+from jobtomail.db import get_entreprise
+from jobtomail.routes.auth import current_user_id
+from jobtomail.services import api_keys, quotas
 from jobtomail.services.email_quality import assess_email
 from jobtomail.services.hunter import find_email as hunter_find_email
 from jobtomail.services.email_finder import find_email as find_email_smtp, FoundEmail
@@ -23,9 +25,14 @@ logger = logging.getLogger(__name__)
 bp = Blueprint("email", __name__)
 
 
-def _smtp_credentials(data: dict) -> tuple[str, str]:
-    email_address = data.get("EMAIL_ADDRESS") or env_or_config("EMAIL_ADDRESS")
-    email_password = data.get("EMAIL_PASSWORD") or env_or_config("EMAIL_PASSWORD")
+def _smtp_credentials(user_id: int, data: dict) -> tuple[str, str]:
+    # IMAP check-replies lit UNIQUEMENT la config par utilisateur — jamais de
+    # fallback sur les variables d'environnement, sans quoi un opérateur
+    # ayant défini EMAIL_ADDRESS/EMAIL_PASSWORD pour son propre usage verrait
+    # sa boîte mail lue (et attribuée) pour n'importe quel utilisateur, faute
+    # d'UI restant pour renseigner une valeur par utilisateur (cf. Task 8).
+    email_address = data.get("EMAIL_ADDRESS") or db.get_user_config_value(user_id, "EMAIL_ADDRESS")
+    email_password = data.get("EMAIL_PASSWORD") or db.get_user_config_value(user_id, "EMAIL_PASSWORD")
     return email_address, email_password
 
 
@@ -55,6 +62,7 @@ def find_email_manual():
     quality = assess_email(email_data.email, company_domain=domain, hunter_score=email_data.score)
     if siret and email_data.email:
         db.apply_email_quality(
+            current_user_id(),
             siret,
             email=email_data.email,
             hunter_score=email_data.score,
@@ -76,7 +84,7 @@ def find_email_hunter():
     prenom = (data.get("prenom") or "").strip()
     nom = (data.get("nom") or "").strip()
     siret = (data.get("siret") or "").strip()
-    hunter_key = data.get("TOKEN_HUNTER_IO") or env_or_config("TOKEN_HUNTER_IO")
+    hunter_key = data.get("TOKEN_HUNTER_IO") or api_keys.hunter_key_for(current_user_id())
 
     if not hunter_key:
         logger.error("Hunter.io refusé : TOKEN manquant")
@@ -106,6 +114,7 @@ def find_email_hunter():
     quality = assess_email(found, company_domain=domain, hunter_score=score_int)
     if siret and found:
         db.apply_email_quality(
+            current_user_id(),
             siret,
             email=found,
             hunter_score=score_int,
@@ -130,6 +139,7 @@ def assess_email_route():
     siret = (data.get("siret") or "").strip()
     if siret and email:
         db.apply_email_quality(
+            current_user_id(),
             siret,
             email=email,
             hunter_score=score_int,
@@ -150,7 +160,7 @@ def generate_accroche_route():
     poste = (data.get("poste") or "").strip()
 
     if siret:
-        ent = get_entreprise(siret)
+        ent = get_entreprise(current_user_id(), siret)
         if ent:
             denomination = denomination or (ent["denomination"] or "")
             commune = commune or (ent["commune"] or "")
@@ -174,7 +184,7 @@ def generate_accroche_route():
         return jsonify({"error": "Impossible de générer l'accroche", "ollama": True}), 500
 
     if siret:
-        db.update_entreprise(siret, {"accroche": text})
+        db.update_entreprise(current_user_id(), siret, {"accroche": text})
 
     return jsonify({"ok": True, "accroche": text})
 
@@ -191,6 +201,7 @@ def preview_mail_route():
     body = mail_body(
         nom,
         genre,
+        user_id=current_user_id(),
         prenom=prenom,
         denomination=denomination,
         poste=poste,
@@ -201,6 +212,7 @@ def preview_mail_route():
 
 @bp.route("/api/send-email", methods=["POST"])
 def send_email_route():
+    user_id = current_user_id()
     data = request.get_json(force=True) or {}
     to_email = (data.get("email") or "").strip()
     nom = (data.get("nom") or "").strip()
@@ -213,11 +225,6 @@ def send_email_route():
     force = bool(data.get("force", False))
     auto_accroche = bool(data.get("auto_accroche", True))
 
-    email_address, email_password = _smtp_credentials(data)
-
-    if not email_address or not email_password:
-        logger.error("Envoi mail refusé : identifiants SMTP manquants")
-        return jsonify({"error": "EMAIL_ADDRESS / EMAIL_PASSWORD manquants"}), 400
     if not to_email:
         logger.warning("Envoi mail refusé : destinataire manquant")
         return jsonify({"error": "Adresse email du destinataire manquante"}), 400
@@ -225,7 +232,7 @@ def send_email_route():
     company_domain = ""
     hunter_score = None
     if siret:
-        ent = get_entreprise(siret)
+        ent = get_entreprise(user_id, siret)
         if ent:
             company_domain = ent["site_web"] or ""
             hunter_score = ent["email_hunter_score"] if "email_hunter_score" in ent.keys() else None
@@ -253,7 +260,7 @@ def send_email_route():
         }), 409
 
     if auto_accroche and not accroche and ollama_available() and siret:
-        ent = get_entreprise(siret)
+        ent = get_entreprise(user_id, siret)
         if ent:
             accroche = generate_accroche(
                 denomination=ent["denomination"] or denomination,
@@ -263,13 +270,20 @@ def send_email_route():
                 poste=poste or (ent["contact_poste"] or ""),
             ) or ""
 
+    quota = quotas.check_and_increment(user_id, "email")
+    if not quota.allowed:
+        logger.warning("Envoi mail refusé : quota mensuel atteint (user_id=%s)", user_id)
+        return jsonify({
+            "error": "quota_exceeded",
+            "message": f"Quota mensuel d'emails atteint ({quota.used}/{quota.limit}). Réinitialisation le 1er du mois.",
+        }), 429
+
     try:
         result = send_candidature_email(
+            user_id,
             to_email=to_email,
             nom=nom,
             genre=genre,
-            email_address=email_address,
-            email_password=email_password,
             siret=siret,
             prenom=prenom,
             denomination=denomination,
@@ -277,11 +291,12 @@ def send_email_route():
             accroche=accroche,
         )
     except Exception as e:
-        logger.exception("Envoi SMTP échoué vers %s", to_email)
-        return jsonify({"error": f"Erreur SMTP : {e}"}), 500
+        logger.exception("Envoi de mail échoué vers %s", to_email)
+        return jsonify({"error": f"Erreur d'envoi : {e}"}), 500
 
     if siret:
         db.apply_email_quality(
+            user_id,
             siret,
             email=to_email,
             hunter_score=quality.get("hunter_score"),
@@ -294,6 +309,7 @@ def send_email_route():
 
 @bp.route("/api/send-relance", methods=["POST"])
 def send_relance_route():
+    user_id = current_user_id()
     data = request.get_json(force=True) or {}
     to_email = (data.get("email") or "").strip()
     nom = (data.get("nom") or "").strip()
@@ -304,17 +320,12 @@ def send_relance_route():
     poste = (data.get("poste") or "").strip()
     force = bool(data.get("force", False))
 
-    email_address, email_password = _smtp_credentials(data)
-
-    if not email_address or not email_password:
-        logger.error("Relance refusée : identifiants SMTP manquants")
-        return jsonify({"error": "EMAIL_ADDRESS / EMAIL_PASSWORD manquants"}), 400
     if not to_email:
         return jsonify({"error": "Adresse email du destinataire manquante"}), 400
     if not siret:
         return jsonify({"error": "SIRET requis pour enregistrer la relance"}), 400
 
-    ent = get_entreprise(siret)
+    ent = get_entreprise(user_id, siret)
     if not ent:
         return jsonify({"error": "Entreprise introuvable"}), 404
 
@@ -333,13 +344,20 @@ def send_relance_route():
     if not in_reply_to:
         logger.warning("Relance sans Message-ID d'origine pour %s — envoi sans fil de discussion", siret)
 
+    quota = quotas.check_and_increment(user_id, "email")
+    if not quota.allowed:
+        logger.warning("Relance refusée : quota mensuel atteint (user_id=%s)", user_id)
+        return jsonify({
+            "error": "quota_exceeded",
+            "message": f"Quota mensuel d'emails atteint ({quota.used}/{quota.limit}). Réinitialisation le 1er du mois.",
+        }), 429
+
     try:
         result = send_relance_email(
+            user_id,
             to_email=to_email,
             nom=nom,
             genre=genre,
-            email_address=email_address,
-            email_password=email_password,
             siret=siret,
             prenom=prenom,
             denomination=denomination or (ent["denomination"] or ""),
@@ -351,8 +369,8 @@ def send_relance_route():
     except ValueError as e:
         return jsonify({"error": str(e), "relance": info}), 400
     except Exception as e:
-        logger.exception("Relance SMTP échouée vers %s", to_email)
-        return jsonify({"error": f"Erreur SMTP : {e}"}), 500
+        logger.exception("Relance échouée vers %s", to_email)
+        return jsonify({"error": f"Erreur d'envoi : {e}"}), 500
 
     return jsonify({
         "ok": True,
@@ -364,13 +382,13 @@ def send_relance_route():
 
 @bp.route("/api/relances/dues", methods=["GET"])
 def relances_dues_route():
-    dues = list_relances_dues()
+    dues = list_relances_dues(current_user_id())
     return jsonify({"ok": True, "count": len(dues), "relances": dues})
 
 
 @bp.route("/api/relances/status/<siret>", methods=["GET"])
 def relance_status_route(siret: str):
-    ent = get_entreprise(siret)
+    ent = get_entreprise(current_user_id(), siret)
     if not ent:
         return jsonify({"error": "Entreprise introuvable"}), 404
     return jsonify({"ok": True, "relance": relance_status(ent)})
@@ -384,7 +402,7 @@ def check_replies_route():
     et met à jour le statut des entreprises concernées.
     """
     data = request.get_json(force=True) or {}
-    email_address, email_password = _smtp_credentials(data)
+    email_address, email_password = _smtp_credentials(current_user_id(), data)
 
     if not email_address or not email_password:
         return jsonify({"error": "EMAIL_ADDRESS / EMAIL_PASSWORD manquants"}), 400
@@ -394,7 +412,7 @@ def check_replies_route():
 
     logger.info("POST /api/check-replies — limit=%d", limit)
     try:
-        result = check_replies(email_address, email_password, limit=limit)
+        result = check_replies(current_user_id(), email_address, email_password, limit=limit)
     except imaplib.IMAP4.error as e:
         logger.exception("IMAP échoué")
         return jsonify({"error": f"Erreur IMAP : {e}"}), 500

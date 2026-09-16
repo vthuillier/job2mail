@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from cryptography.fernet import Fernet
+
 
 def test_get_entreprises_empty(client):
     res = client.get("/api/entreprises")
@@ -15,11 +17,24 @@ def test_get_config_defaults(client):
     assert data["needs_setup"] is True
 
 
-def test_post_then_get_config_roundtrip(client):
+def test_post_then_get_config_roundtrip(client, monkeypatch):
+    # INSEE_TOKEN reste une variable d'environnement globale côté serveur
+    # (jamais stockée par utilisateur) — on la fournit via l'environnement
+    # pour que needs_setup passe à False une fois les autres champs remplis.
+    monkeypatch.setenv("INSEE_TOKEN", "dummy-token")
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    # needs_setup ne repose plus sur EMAIL_ADDRESS/EMAIL_PASSWORD (SMTP) mais
+    # sur la présence d'un compte Gmail OAuth connecté (refresh token stocké).
+    from jobtomail import db
+
+    with client.session_transaction() as sess:
+        user_id = sess["user_id"]
+    db.save_google_refresh_token(user_id, "fake-refresh-token")
+
     payload = {
         "candidate_name": "Jean Dupont",
-        "EMAIL_ADDRESS": "jean@example.com",
-        "INSEE_TOKEN": "dummy-token",
+        "INSEE_TOKEN": "user-supplied-token-should-be-ignored",
     }
     post_res = client.post("/api/config", json=payload)
     assert post_res.status_code == 200
@@ -27,7 +42,40 @@ def test_post_then_get_config_roundtrip(client):
     get_res = client.get("/api/config")
     data = get_res.get_json()
     assert data["candidate_name"] == "Jean Dupont"
+    # Le token posté par le client ne doit jamais être persisté ni utilisé,
+    # et le raw INSEE_TOKEN n'est jamais renvoyé au client — seul un booléen
+    # "insee_configured" reflète la présence de la variable d'environnement.
+    assert "INSEE_TOKEN" not in data
+    assert data["insee_configured"] is True
+    assert data["google_connected_email"] == "test-user@example.com"
     assert data["needs_setup"] is False
+
+
+def test_get_config_never_leaks_raw_insee_token(client, monkeypatch):
+    """Critical: GET /api/config must never return the operator's raw
+    INSEE_TOKEN value — only a boolean `insee_configured` — otherwise any
+    authenticated user could read the shared Sirene API credential and
+    bypass the per-user scan quota by calling INSEE directly."""
+    monkeypatch.setenv("INSEE_TOKEN", "super-secret-operator-token")
+
+    res = client.get("/api/config")
+    assert res.status_code == 200
+    data = res.get_json()
+
+    assert "INSEE_TOKEN" not in data
+    assert "super-secret-operator-token" not in res.get_data(as_text=True)
+    assert data["insee_configured"] is True
+
+
+def test_post_config_never_persists_insee_token(client):
+    """INSEE_TOKEN : reste une variable d'environnement globale côté serveur,
+    jamais exposée/persistée pour l'utilisateur (design spec §3)."""
+    client.post("/api/config", json={"INSEE_TOKEN": "attacker-or-user-supplied"})
+    res = client.get("/api/config")
+    assert res.status_code == 200
+    data = res.get_json()
+    assert "INSEE_TOKEN" not in data
+    assert data["insee_configured"] is False
 
 
 def test_post_config_rejects_internal_keys(client):
@@ -49,7 +97,60 @@ def test_prune_invalid_min_employees_returns_400(client):
     assert res.status_code == 400
 
 
-def test_index_page_has_db_backend_section(client):
+def test_index_page_hides_db_backend_picker(client):
+    """La sélection du backend DB est une décision exploitant (variables
+    d'environnement), pas un réglage utilisateur exposé dans l'UI."""
     res = client.get("/")
     assert res.status_code == 200
-    assert b'id="db-backend-select"' in res.data
+    assert b'id="db-backend-select"' not in res.data
+
+
+def test_magic_link_login_sets_real_user_id_in_session(client, app):
+    """Après un login réussi par lien magique, session['user_id'] doit pointer
+    vers une vraie ligne de la table users (et non juste un entier magique en
+    dur)."""
+    from jobtomail.routes import auth as auth_module
+
+    with app.app_context():
+        token = auth_module.magic_link.generate_token("someone@example.com")
+
+    res = client.get(f"/auth/magic/{token}")
+    assert res.status_code in (302, 303)
+
+    with client.session_transaction() as sess:
+        assert sess["authenticated"] is True
+        assert "user_id" in sess
+        user_id = sess["user_id"]
+
+    from jobtomail import db
+
+    row = db.get_user_by_email("someone@example.com")
+    assert row is not None
+    assert row["id"] == user_id
+
+
+def test_index_renders_ad_slot_when_enabled(client, temp_db):
+    from jobtomail import db
+
+    db.set_config_values({"ads_enabled": "1", "ads_network_id": "ca-pub-test"})
+    with client.session_transaction() as sess:
+        sess["user_id"] = 1
+        sess["authenticated"] = True
+    response = client.get("/")
+    assert b'class="ad-slot"' in response.data
+
+
+def test_delete_account_purges_all_user_data(client, temp_db):
+    from jobtomail import db
+
+    db.create_user("todelete@example.com")
+    db.insert_entreprise(1, {"siret": "11111111100001", "denomination": "X", "adresse": "", "commune": ""})
+    with client.session_transaction() as sess:
+        sess["user_id"] = 1
+        sess["authenticated"] = True
+
+    response = client.post("/api/account/delete")
+
+    assert response.status_code == 200
+    assert db.get_user_by_id(1) is None
+    assert db.list_entreprises(1) == []

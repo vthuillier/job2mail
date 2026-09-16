@@ -1,13 +1,16 @@
-"""Envoi du mail de candidature et des relances (SMTP Gmail)."""
+"""Envoi du mail de candidature et des relances (Gmail API via OAuth)."""
 
 from __future__ import annotations
 
+import base64
 import logging
+import os
 import re
-import smtplib
-import ssl
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
+
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build as build_google_service
 
 from jobtomail.constants import (
     CV_PATH,
@@ -36,13 +39,18 @@ def _render_template(template: str, **kwargs: str) -> str:
     return result.strip() + "\n"
 
 
-def _cv_attachment_filename() -> str:
-    name = (db.get_all_config().get("candidate_name") or "").strip()
+def _cv_attachment_filename(user_id: int) -> str:
+    name = (db.get_user_config_value(user_id, "candidate_name") or "").strip()
     return f"CV - {name}.pdf" if name else "CV.pdf"
 
 
-def get_mail_templates() -> dict[str, str]:
-    cfg = db.get_all_config()
+def _connected_email(user_id: int) -> str:
+    user = db.get_user_by_id(user_id)
+    return (user or {}).get("email") or ""
+
+
+def get_mail_templates(user_id: int) -> dict[str, str]:
+    cfg = db.get_all_user_config(user_id)
     return {
         "subject": cfg.get("mail_subject") or MAIL_SUBJECT,
         "body": cfg.get("mail_body") or DEFAULT_MAIL_BODY,
@@ -55,13 +63,14 @@ def mail_body(
     nom: str,
     genre: str,
     *,
+    user_id: int,
     prenom: str = "",
     denomination: str = "",
     poste: str = "",
     accroche: str = "",
     body_template: str | None = None,
 ) -> str:
-    template = body_template or get_mail_templates()["body"]
+    template = body_template or get_mail_templates(user_id)["body"]
     accroche_txt = (accroche or "").strip()
     if accroche_txt and "{accroche}" not in template:
         # Anciens templates sans placeholder : insert après la 1ère ligne
@@ -85,13 +94,14 @@ def relance_body(
     nom: str,
     genre: str,
     *,
+    user_id: int,
     prenom: str = "",
     denomination: str = "",
     poste: str = "",
     angle: int = 1,
     body_template: str | None = None,
 ) -> str:
-    templates = get_mail_templates()
+    templates = get_mail_templates(user_id)
     if body_template:
         template = body_template
     elif angle >= 2:
@@ -116,20 +126,36 @@ def _reply_subject(original_subject: str) -> str:
     return f"Re: {subject}"
 
 
-def _smtp_send(msg: EmailMessage, email_address: str, email_password: str) -> None:
-    context = ssl.create_default_context()
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=30) as smtp:
-        smtp.login(email_address, email_password)
-        smtp.send_message(msg)
+def _build_gmail_service(user_id: int):
+    refresh_token = db.get_google_refresh_token(user_id)
+    if not refresh_token:
+        raise RuntimeError(
+            "Aucun compte Gmail connecté pour cet utilisateur — "
+            "reconnecte Gmail depuis Réglages."
+        )
+    credentials = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.environ["GOOGLE_CLIENT_ID"],
+        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+        scopes=["https://www.googleapis.com/auth/gmail.send"],
+    )
+    return build_google_service("gmail", "v1", credentials=credentials)
+
+
+def _gmail_send(user_id: int, msg: EmailMessage) -> None:
+    service = _build_gmail_service(user_id)
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    service.users().messages().send(userId="me", body={"raw": raw}).execute()
 
 
 def send_candidature_email(
+    user_id: int,
     *,
     to_email: str,
     nom: str,
     genre: str,
-    email_address: str,
-    email_password: str,
     siret: str | None = None,
     prenom: str = "",
     denomination: str = "",
@@ -138,22 +164,23 @@ def send_candidature_email(
 ) -> dict[str, str]:
     logger.info("Envoi mail candidature → %s (contact=%s)", to_email, nom)
 
-    templates = get_mail_templates()
+    templates = get_mail_templates(user_id)
     subject = templates["subject"]
     body = mail_body(
         nom,
         genre,
+        user_id=user_id,
         prenom=prenom,
         denomination=denomination,
         poste=poste,
         accroche=accroche,
         body_template=templates["body"],
     )
-    domain = email_address.split("@")[-1] if "@" in email_address else "gmail.com"
+    sender_email = _connected_email(user_id)
+    domain = sender_email.split("@")[-1] if "@" in sender_email else "gmail.com"
     message_id = make_msgid(domain=domain)
 
     msg = EmailMessage()
-    msg["From"] = email_address
     msg["To"] = to_email
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)
@@ -166,17 +193,18 @@ def send_candidature_email(
                 f.read(),
                 maintype="application",
                 subtype="pdf",
-                filename=_cv_attachment_filename(),
+                filename=_cv_attachment_filename(user_id),
             )
         logger.debug("CV joint : %s", CV_PATH)
     else:
         logger.warning("CV introuvable : %s", CV_PATH)
 
-    _smtp_send(msg, email_address, email_password)
+    _gmail_send(user_id, msg)
     logger.info("Mail envoyé avec succès à %s (Message-ID=%s)", to_email, message_id)
 
     if siret:
         db.mark_email_sent(
+            user_id,
             siret,
             to_email,
             message_id=message_id,
@@ -184,18 +212,17 @@ def send_candidature_email(
             body=body,
         )
         if accroche:
-            db.update_entreprise(siret, {"accroche": accroche})
+            db.update_entreprise(user_id, siret, {"accroche": accroche})
 
     return {"message_id": message_id, "subject": subject, "body_preview": body[:280]}
 
 
 def send_relance_email(
+    user_id: int,
     *,
     to_email: str,
     nom: str,
     genre: str,
-    email_address: str,
-    email_password: str,
     siret: str,
     prenom: str = "",
     denomination: str = "",
@@ -204,7 +231,7 @@ def send_relance_email(
     original_subject: str | None = None,
     force: bool = False,
 ) -> dict[str, str]:
-    ent = db.get_entreprise(siret)
+    ent = db.get_entreprise(user_id, siret)
     if not ent:
         raise ValueError("Entreprise introuvable")
 
@@ -227,31 +254,34 @@ def send_relance_email(
         siret,
     )
 
-    templates = get_mail_templates()
+    templates = get_mail_templates(user_id)
     subject = _reply_subject(original_subject or templates["subject"])
     rel_body = relance_body(
         nom,
         genre,
+        user_id=user_id,
         prenom=prenom,
         denomination=denomination,
         poste=poste,
         angle=angle,
     )
 
+    sender_email = _connected_email(user_id)
+
     previous_body = (ent["email_body"] or "").strip() if "email_body" in ent.keys() else ""
     if previous_body:
         quoted_previous = "\n".join(f"> {line}" for line in previous_body.split("\n"))
         sent_date = ent.get("last_relance_at") or ent.get("email_sent_at") or ""
-        header = f"Le {sent_date}, {email_address} a écrit :" if sent_date else "Message précédent :"
+        who = sender_email or "toi"
+        header = f"Le {sent_date}, {who} a écrit :" if sent_date else "Message précédent :"
         body = f"{rel_body}\n\n{header}\n{quoted_previous}"
     else:
         body = rel_body
 
-    domain = email_address.split("@")[-1] if "@" in email_address else "gmail.com"
+    domain = sender_email.split("@")[-1] if "@" in sender_email else "gmail.com"
     message_id = make_msgid(domain=domain)
 
     msg = EmailMessage()
-    msg["From"] = email_address
     msg["To"] = to_email
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)
@@ -267,13 +297,13 @@ def send_relance_email(
                 f.read(),
                 maintype="application",
                 subtype="pdf",
-                filename=_cv_attachment_filename(),
+                filename=_cv_attachment_filename(user_id),
             )
         logger.debug("CV joint à la relance : %s", CV_PATH)
     else:
         logger.warning("CV introuvable pour la relance : %s", CV_PATH)
 
-    _smtp_send(msg, email_address, email_password)
+    _gmail_send(user_id, msg)
     logger.info(
         "Relance envoyée à %s (Message-ID=%s, In-Reply-To=%s, angle=%d)",
         to_email,
@@ -282,7 +312,7 @@ def send_relance_email(
         angle,
     )
 
-    db.mark_relance_sent(siret, message_id=message_id, body=body)
+    db.mark_relance_sent(user_id, siret, message_id=message_id, body=body)
 
     return {
         "message_id": message_id,

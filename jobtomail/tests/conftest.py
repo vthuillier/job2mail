@@ -21,9 +21,15 @@ def temp_db(tmp_path, monkeypatch):
 @pytest.fixture
 def app(temp_db, monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "test-secret")
-    # setenv (pas delenv) : load_dotenv() dans create_app() re-remplirait une clé absente
-    # depuis le .env local, ré-activant l'auth malgré l'isolation voulue par le test.
-    monkeypatch.setenv("APP_PASSWORD", "")
+    # Même raison : un .env local (dépôt parent du worktree) peut contenir un vrai
+    # INSEE_TOKEN, faisant passer à tort le contrôle "clé manquante" dans les tests.
+    monkeypatch.setenv("INSEE_TOKEN", "")
+    # Idem pour SerpAPI/Hunter : un .env local peut définir ces clés en tant
+    # qu'override opérateur, ce qui masquerait le comportement testé (clé
+    # utilisateur par défaut, chiffrement/déchiffrement, "clé manquante").
+    monkeypatch.setenv("SERPAPI_KEY", "")
+    monkeypatch.setenv("SERPAPI_TOKEN", "")
+    monkeypatch.setenv("TOKEN_HUNTER_IO", "")
     from jobtomail import create_app
 
     flask_app = create_app()
@@ -33,4 +39,19 @@ def app(temp_db, monkeypatch):
 
 @pytest.fixture
 def client(app):
-    return app.test_client()
+    """Client de test authentifié par défaut.
+
+    Auth est désormais obligatoire (magic link / Google OAuth) — la plupart
+    des tests ciblent des routes protégées et n'ont pas vocation à exercer le
+    flux de login lui-même, donc on seed directement `session["user_id"]`
+    avec un vrai utilisateur, plutôt que de rejouer un login à chaque test
+    (cf. tests dédiés à l'auth dans test_auth_security.py).
+    """
+    from jobtomail import db
+
+    test_client = app.test_client()
+    with app.app_context():
+        user_id = db.create_user("test-user@example.com")
+    with test_client.session_transaction() as sess:
+        sess["user_id"] = user_id
+    return test_client

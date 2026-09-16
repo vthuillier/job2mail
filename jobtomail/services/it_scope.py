@@ -17,13 +17,13 @@ def _strip_accents(value: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
-def is_it_naf(naf_code: str | None) -> bool:
+def is_it_naf(naf_code: str | None, user_id: int) -> bool:
     """True si le code NAF fait partie des NAF configurés par l'utilisateur
     (state.nafs — n'importe quel métier, pas seulement l'informatique)."""
     code = (naf_code or "").strip().upper().replace(" ", "")
     if not code:
         return False
-    return code in db.load_nafs()
+    return code in db.load_nafs(db.get_all_user_config(user_id))
 
 
 def is_tech_theme(theme: str | None) -> bool:
@@ -34,7 +34,7 @@ def is_tech_theme(theme: str | None) -> bool:
     return any(key in t for key in FRENCHTECH_TECH_THEMES)
 
 
-def is_in_it_scope(row: dict[str, Any]) -> bool:
+def is_in_it_scope(row: dict[str, Any], user_id: int) -> bool:
     """
     True si l'entreprise est dans le périmètre candidature IT.
     Mairies et associations sont conservées hors auto-marquage.
@@ -45,7 +45,7 @@ def is_in_it_scope(row: dict[str, Any]) -> bool:
 
     naf = (row.get("naf_code") or "").strip()
     if naf:
-        return is_it_naf(naf)
+        return is_it_naf(naf, user_id)
 
     # Thème French Tech stocké parfois dans naf_libelle
     theme = (row.get("naf_libelle") or "").strip()
@@ -57,20 +57,20 @@ def is_in_it_scope(row: dict[str, Any]) -> bool:
     return True
 
 
-def should_mark_hors_champs(row: dict[str, Any]) -> bool:
+def should_mark_hors_champs(row: dict[str, Any], user_id: int) -> bool:
     """True si une entreprise « à postuler » devrait passer en hors_champs."""
     status = (row.get("status") or "a_postuler").strip()
     if status != "a_postuler":
         return False
-    return not is_in_it_scope(row)
+    return not is_in_it_scope(row, user_id)
 
 
-def mark_hors_champs_entreprises(*, sirets: list[str] | None = None) -> dict[str, Any]:
+def mark_hors_champs_entreprises(user_id: int, *, sirets: list[str] | None = None) -> dict[str, Any]:
     """
     Passe en hors_champs les entreprises hors périmètre IT (NAF ou thème).
     Ne modifie que le statut « à postuler ».
     """
-    rows = [dict(r) for r in db.list_entreprises()]
+    rows = [dict(r) for r in db.list_entreprises(user_id)]
     if sirets:
         wanted = set(sirets)
         rows = [r for r in rows if r["siret"] in wanted]
@@ -78,10 +78,10 @@ def mark_hors_champs_entreprises(*, sirets: list[str] | None = None) -> dict[str
     marked = 0
     skipped = 0
     for row in rows:
-        if not should_mark_hors_champs(row):
+        if not should_mark_hors_champs(row, user_id):
             skipped += 1
             continue
-        db.update_entreprise(row["siret"], {"status": "hors_champs"})
+        db.update_entreprise(user_id, row["siret"], {"status": "hors_champs"})
         marked += 1
         logger.info(
             "Hors champs — %s (NAF=%s, thème=%s)",

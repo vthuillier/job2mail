@@ -41,7 +41,7 @@ function activatePage(page) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
     }).then((r) => r.json());
-    if (res.error) throw new Error(res.error);
+    if (res.error) throw new Error(res.message || res.error);
     return pollJob(res.job_id);
   }
 
@@ -439,11 +439,14 @@ function activatePage(page) {
     state.config = cfg;
     state.nafs = { ...(cfg.nafs || {}) };
 
-    document.getElementById("cfg-insee").value = cfg.INSEE_TOKEN || "";
     document.getElementById("cfg-serp").value = cfg.SERPAPI_KEY || "";
     document.getElementById("cfg-hunter").value = cfg.TOKEN_HUNTER_IO || "";
-    document.getElementById("cfg-email").value = cfg.EMAIL_ADDRESS || "";
-    document.getElementById("cfg-pwd").value = cfg.EMAIL_PASSWORD || "";
+    const gmailStatus = document.getElementById("cfg-gmail-status");
+    if (gmailStatus) {
+      gmailStatus.textContent = cfg.google_connected_email
+        ? `Compte Gmail connecté : ${cfg.google_connected_email}`
+        : "Aucun compte Gmail connecté — clique sur « Reconnecter Gmail ».";
+    }
     document.getElementById("cfg-candidate-name").value = cfg.candidate_name || "";
     document.getElementById("cfg-point").value = cfg.point_ref || "La Crau";
     document.getElementById("cfg-rayon").value = cfg.rayon_km || "20";
@@ -479,7 +482,6 @@ function activatePage(page) {
       activatePage("config");
       toast("Bienvenue ! Renseigne tes paramètres pour commencer (ou passe-les par un fichier .env).");
     }
-    loadDbBackend();
   }
 
   function renderNafBox(boxId, checkedAll = false) {
@@ -1137,19 +1139,13 @@ function activatePage(page) {
 
   document.getElementById("btn-check-replies").addEventListener("click", async () => {
     const btn = document.getElementById("btn-check-replies");
-    if (!state.config.EMAIL_ADDRESS || !state.config.EMAIL_PASSWORD) {
-      return toast("Configure email + mot de passe app dans Paramètres", "error");
-    }
     btn.disabled = true;
     btn.textContent = "Vérification…";
     try {
       const res = await fetch("/api/check-replies", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          EMAIL_ADDRESS: state.config.EMAIL_ADDRESS,
-          EMAIL_PASSWORD: state.config.EMAIL_PASSWORD,
-        }),
+        body: JSON.stringify({}),
       }).then((r) => r.json());
       if (res.error) {
         toast(res.error, "error");
@@ -1212,8 +1208,6 @@ function activatePage(page) {
           force,
           accept_warn,
           auto_accroche: !accroche,
-          EMAIL_ADDRESS: state.config.EMAIL_ADDRESS,
-          EMAIL_PASSWORD: state.config.EMAIL_PASSWORD,
         }),
       }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
     }
@@ -1227,6 +1221,7 @@ function activatePage(page) {
       if (!confirm(`Email de mauvaise qualité (${res.quality.note}). Forcer l'envoi ?`)) return;
       res = await doSend({ force: true, accept_warn: true });
     }
+    if (res.status === 429) return toast(res.message || res.error, "error");
     if (res.error) return toast(res.error, "error");
     if (res.accroche) document.getElementById("d-accroche").value = res.accroche;
     toast("Mail envoyé — statut → Postulé");
@@ -1276,10 +1271,10 @@ function activatePage(page) {
         denomination,
         siret,
         force,
-        EMAIL_ADDRESS: state.config.EMAIL_ADDRESS,
-        EMAIL_PASSWORD: state.config.EMAIL_PASSWORD,
       }),
     }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
+
+    if (res.status === 429) return toast(res.message || res.error, "error");
 
     if (res.needs_force && !force) {
       if (!confirm(`${res.error}. Forcer ?`)) return;
@@ -1288,10 +1283,9 @@ function activatePage(page) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email, nom, prenom, genre, poste, denomination, siret, force: true,
-          EMAIL_ADDRESS: state.config.EMAIL_ADDRESS,
-          EMAIL_PASSWORD: state.config.EMAIL_PASSWORD,
         }),
-      }).then((r) => r.json());
+      }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
+      if (res2.status === 429) return toast(res2.message || res2.error, "error");
       if (res2.error) return toast(res2.error, "error");
       toast(`Relance n°${res2.relance_number || "?"} envoyée (angle ${res2.angle || "?"})`);
     } else if (res.error) {
@@ -1311,11 +1305,8 @@ function activatePage(page) {
       selectedNafs[cb.value] = state.nafs[cb.value] || cb.value;
     });
     const payload = {
-      INSEE_TOKEN: document.getElementById("cfg-insee").value.trim(),
       SERPAPI_KEY: document.getElementById("cfg-serp").value.trim(),
       TOKEN_HUNTER_IO: document.getElementById("cfg-hunter").value.trim(),
-      EMAIL_ADDRESS: document.getElementById("cfg-email").value.trim(),
-      EMAIL_PASSWORD: document.getElementById("cfg-pwd").value.trim(),
       candidate_name: document.getElementById("cfg-candidate-name").value.trim(),
       point_ref: document.getElementById("cfg-point").value.trim(),
       rayon_km: document.getElementById("cfg-rayon").value,
@@ -1368,65 +1359,34 @@ function activatePage(page) {
     }
   });
 
-  async function loadDbBackend() {
-    const res = await fetch("/api/db/backend").then((r) => r.json());
-    const select = document.getElementById("db-backend-select");
-    const status = document.getElementById("db-backend-status");
-    const fields = document.getElementById("db-backend-fields");
-    const saveBtn = document.getElementById("btn-db-backend-save");
-    if (!select || !status || !fields) return;
-
-    select.value = res.backend || "sqlite";
-    fields.style.display = res.backend === "sqlite" ? "none" : "block";
-    document.getElementById("db-host").value = res.host || "";
-    document.getElementById("db-port").value = res.port || "";
-    document.getElementById("db-user").value = res.user || "";
-    document.getElementById("db-dbname").value = res.dbname || "";
-
-    if (res.locked) {
-      status.textContent = `Backend actuel : ${res.backend} (imposé par variable d'environnement DB_BACKEND).`;
-      select.disabled = true;
-      if (saveBtn) saveBtn.disabled = true;
-    } else {
-      status.textContent = `Backend actuel : ${res.backend} (source : ${res.source === "file" ? "config locale" : "défaut"}).`;
-      select.disabled = false;
-      if (saveBtn) saveBtn.disabled = false;
+  document.getElementById("btn-consent-accept")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-consent-accept");
+    btn.disabled = true;
+    try {
+      await fetch("/api/account/consent", { method: "POST" });
+    } catch (err) {
+      toast(String(err.message || err), "error");
+    } finally {
+      document.getElementById("modal-consent")?.remove();
+      document.getElementById("consent-overlay")?.remove();
+      btn.disabled = false;
     }
-  }
-
-  document.getElementById("db-backend-select")?.addEventListener("change", (e) => {
-    const fields = document.getElementById("db-backend-fields");
-    if (fields) fields.style.display = e.target.value === "sqlite" ? "none" : "block";
   });
 
-  document.getElementById("btn-db-backend-save")?.addEventListener("click", async () => {
-    const btn = document.getElementById("btn-db-backend-save");
-    const backend = document.getElementById("db-backend-select").value;
-    const payload = {
-      backend,
-      host: document.getElementById("db-host").value.trim(),
-      port: document.getElementById("db-port").value.trim(),
-      user: document.getElementById("db-user").value.trim(),
-      password: document.getElementById("db-password").value,
-      dbname: document.getElementById("db-dbname").value.trim(),
-    };
+  document.getElementById("btn-delete-account")?.addEventListener("click", async () => {
+    if (!confirm("Supprimer définitivement ton compte et toutes tes données (entreprises, candidatures, réglages) ? Cette action est irréversible.")) {
+      return;
+    }
+    const btn = document.getElementById("btn-delete-account");
     btn.disabled = true;
-    const prevText = btn.textContent;
-    btn.textContent = "Test de connexion…";
     try {
-      const res = await fetch("/api/db/backend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }).then((r) => r.json());
+      const res = await fetch("/api/account/delete", { method: "POST" }).then((r) => r.json());
       if (res.error) return toast(res.error, "error");
-      toast(`Backend DB changé : ${res.backend}`);
-      await loadDbBackend();
+      window.location.href = "/login";
     } catch (err) {
       toast(String(err.message || err), "error");
     } finally {
       btn.disabled = false;
-      btn.textContent = prevText;
     }
   });
 
@@ -1557,7 +1517,7 @@ function activatePage(page) {
 
   document.getElementById("btn-hors-champs").addEventListener("click", async () => {
     const btn = document.getElementById("btn-hors-champs");
-    if (!confirm("Marquer en « hors champs » toutes les entreprises à postuler dont le NAF ou le thème n'est pas informatique ?")) {
+    if (!confirm("Nettoyer les résultats non pertinents : marquer comme non pertinentes toutes les entreprises à postuler dont le secteur ou la thématique n'est pas informatique ?")) {
       return;
     }
     btn.disabled = true;
@@ -1577,7 +1537,7 @@ function activatePage(page) {
       document.querySelector('.nav-btn[data-page="entreprises"]').click();
     } finally {
       btn.disabled = false;
-      btn.textContent = "Marquer hors champs (NAF / thème non IT)";
+      btn.textContent = "Nettoyer les résultats non pertinents";
     }
   });
 
@@ -1601,7 +1561,7 @@ function activatePage(page) {
     }
 
     btn.disabled = true;
-    btn.innerHTML = `<span class="spinner"></span> Scan Sirene…`;
+    btn.innerHTML = `<span class="spinner"></span> Recherche en cours…`;
 
     try {
       const national = document.getElementById("scan-national").checked;
@@ -1613,7 +1573,6 @@ function activatePage(page) {
         nafs: selected,
         include_mairies: includeMairies,
         include_associations: includeAssociations,
-        INSEE_TOKEN: state.config.INSEE_TOKEN,
       });
 
       const clean = res.clean || {};

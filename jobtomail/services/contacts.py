@@ -281,6 +281,7 @@ def pick_best_people_contact(
 
 
 def enrich_entreprise_contact(
+    user_id: int,
     *,
     siret: str,
     serpapi_key: str,
@@ -288,7 +289,7 @@ def enrich_entreprise_contact(
     use_ollama: bool = False,
 ) -> dict[str, Any]:
     """Cherche un contact RH/tech et le pose si meilleur que le dirigeant légal."""
-    ent = db.get_entreprise(siret)
+    ent = db.get_entreprise(user_id, siret)
     if not ent:
         return {"siret": siret, "ok": False, "error": "introuvable"}
 
@@ -362,7 +363,7 @@ def enrich_entreprise_contact(
         "contact_linkedin": best.get("contact_linkedin") or "",
         "contact_source": "linkedin_search",
     }
-    db.apply_contact(siret, fields)
+    db.apply_contact(user_id, siret, fields)
     logger.info(
         "Contact RH/tech %s %s (%s) → %s",
         fields["contact_prenom"],
@@ -382,6 +383,7 @@ def enrich_entreprise_contact(
 
 
 def run_contacts_scan(
+    user_id: int,
     *,
     serpapi_key: str,
     sirets: list[str] | None = None,
@@ -390,10 +392,10 @@ def run_contacts_scan(
     use_ollama: bool = False,
 ) -> dict[str, Any]:
     if sirets:
-        rows = [db.get_entreprise(s) for s in sirets]
+        rows = [db.get_entreprise(user_id, s) for s in sirets]
         rows = [r for r in rows if r]
     else:
-        rows = db.list_entreprises()
+        rows = db.list_entreprises(user_id)
         rows = [
             r
             for r in rows
@@ -418,6 +420,7 @@ def run_contacts_scan(
 
     for row in rows:
         result = enrich_entreprise_contact(
+            user_id,
             siret=row["siret"],
             serpapi_key=serpapi_key,
             force=force,
