@@ -163,7 +163,18 @@ def google_login_callback():
         logger.warning("Échec de connexion Google (code manquant) depuis %s", _client_ip())
         return render_template("login.html", error="Échec de connexion Google, réessaie.")
 
-    identity = google_oauth.exchange_code(code)
+    try:
+        identity = google_oauth.exchange_code(code)
+    except Exception:
+        # exchange_code does a network round-trip (token exchange) plus
+        # cryptographic id_token verification — an invalid/expired code, a
+        # Google outage, or a verify_oauth2_token ValueError can all land
+        # here. None of that is safe or useful to show the user, but it must
+        # not surface as a raw 500 either — log it server-side and fall back
+        # to the same generic error the other checks in this route use.
+        logger.exception("Échec de connexion Google (exchange_code) depuis %s", _client_ip())
+        return render_template("login.html", error="Échec de connexion Google, réessaie.")
+
     user = db.get_user_by_email(identity.email)
     user_id = user["id"] if user else db.create_user(identity.email, google_sub=identity.sub)
     if identity.refresh_token:

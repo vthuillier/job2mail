@@ -165,6 +165,33 @@ def test_google_login_callback_success_sets_session_and_saves_refresh_token(
         assert sess["user_id"] == row["id"]
 
 
+def test_google_login_callback_handles_exchange_code_failure_cleanly(client, monkeypatch):
+    """exchange_code can raise for an invalid/expired code, a Google outage, or a failed
+    id_token verification (ValueError from verify_oauth2_token) — none of that should
+    surface as a raw 500, and no partial login state should be left behind."""
+    with client.session_transaction() as sess:
+        sess["_oauth_state"] = "expected-state"
+        sess["_oauth_next"] = "/dashboard"
+        original_user_id = sess["user_id"]  # seeded by the `client` fixture
+
+    def _boom(code):
+        raise ValueError("Wrong recipient, payload audience != requested audience")
+
+    monkeypatch.setattr(auth_module.google_oauth, "exchange_code", _boom)
+
+    res = client.get("/auth/google/callback?code=abc123&state=expected-state")
+
+    assert res.status_code == 200
+    assert "Échec de connexion Google" in res.get_data(as_text=True)
+    # No internal exception detail leaked to the user.
+    assert "Wrong recipient" not in res.get_data(as_text=True)
+
+    with client.session_transaction() as sess:
+        # Session is untouched by the failed attempt: no new/partial login state.
+        assert sess.get("user_id") == original_user_id
+        assert "_oauth_state" not in sess
+
+
 def _fernet_key() -> str:
     from cryptography.fernet import Fernet
 
