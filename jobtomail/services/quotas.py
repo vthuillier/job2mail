@@ -29,7 +29,14 @@ def _current_period() -> str:
 def _limit_for(kind: str) -> int:
     override = db.get_app_config_value(f"quota_{kind}_limit")
     if override:
-        return int(override)
+        try:
+            return int(override)
+        except (TypeError, ValueError):
+            # Défense en profondeur : une valeur stockée malformée (ex.
+            # atteinte par un autre chemin que l'endpoint admin, qui valide
+            # déjà l'entrée) ne doit jamais faire planter les scans/emails de
+            # tous les utilisateurs — on retombe sur la limite par défaut.
+            pass
     return globals()[_KIND_TO_DEFAULT_LIMIT[kind]]
 
 

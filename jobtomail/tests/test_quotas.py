@@ -64,6 +64,20 @@ def test_send_email_route_returns_429_on_quota_exceeded(client, monkeypatch):
     assert data["error"] == "quota_exceeded"
 
 
+def test_limit_for_degrades_to_default_on_malformed_override(temp_db):
+    """Defense in depth: a malformed stored quota override (e.g. reaching
+    the config table through some other path than the validated admin
+    endpoint) must not raise and break every user's scan/email requests —
+    it should fall back to the module default."""
+    from jobtomail import db
+
+    db.set_config_values({"quota_scan_limit": "not-a-number"})
+    assert quotas._limit_for("scan") == quotas.DEFAULT_SCAN_LIMIT
+
+    db.set_config_values({"quota_email_limit": ""})
+    assert quotas._limit_for("email") == quotas.DEFAULT_EMAIL_LIMIT
+
+
 def test_missing_insee_token_does_not_consume_scan_quota(client):
     from jobtomail import db
 
