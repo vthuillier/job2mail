@@ -28,7 +28,9 @@ Placez votre CV au format PDF à la racine du projet sous le nom `cv.pdf` (il se
 docker compose up --build
 ```
 
-Ouvrez ensuite [http://localhost:5001](http://localhost:5001) : renseignez vos clés API et votre nom dans l'onglet **Réglages** directement depuis l'interface (pas besoin de modifier le fichier `.env` à la main).
+Ouvrez ensuite [http://localhost:5001](http://localhost:5001) : renseignez votre nom et vos clés SerpAPI/Hunter.io dans l'onglet **Réglages** directement depuis l'interface. Les variables opérateur (`SECRET_KEY`, `GOOGLE_CLIENT_*`, `APP_ENCRYPTION_KEY`, `INSEE_TOKEN`) restent à définir dans `.env` avant le premier lancement — voir [Configuration](#configuration).
+
+> ⚠️ **Mise à jour depuis une version mono-utilisateur antérieure** : un fichier `jobtomail.db` préexistant (avant ce passage au multi-tenant) doit être **supprimé** avant de lancer cette version — il n'existe pas de chemin de migration automatique depuis le schéma mono-tenant.
 
 ## Démarrage sans Docker (pour les développeurs)
 
@@ -44,17 +46,22 @@ L'application est alors disponible sur `http://127.0.0.1:5001`.
 
 ## Configuration
 
-Toutes les clés ci-dessous peuvent être définies dans `.env` **ou** directement depuis l'onglet Réglages de l'application (le web UI a priorité et ne nécessite aucune connaissance technique) :
+Ces variables sont **opérateur-only** : elles se définissent uniquement dans `.env` (ou l'environnement du conteneur) et ne sont jamais exposées ni modifiables depuis l'onglet Réglages :
 
 | Clé | Utilité | Où l'obtenir |
 |---|---|---|
-| `INSEE_TOKEN` | Recherche d'entreprises (API Sirene) | [api.insee.fr](https://api.insee.fr) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | **Requis.** Connexion "Se connecter avec Google" — l'application renvoie une erreur 500 dès le premier login sans ces variables. | [console.cloud.google.com](https://console.cloud.google.com/apis/credentials) |
+| `APP_ENCRYPTION_KEY` | **Requis.** Chiffrement au repos des refresh tokens Google et des clés SerpAPI/Hunter.io stockées par utilisateur — 500 dès la première sauvegarde de clé sans elle. | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `SECRET_KEY` | Optionnel. Clé de session Flask ; si absente, une clé est générée et persistée en base au premier démarrage (partagée entre workers gunicorn) — à définir explicitement en prod pour un contrôle explicite. | `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `INSEE_TOKEN` | Optionnel mais nécessaire pour scanner. Recherche d'entreprises (API Sirene) — clé partagée par l'exploitant, jamais lue ni affichée côté client. | [api.insee.fr](https://api.insee.fr) |
+
+Ces valeurs sont, elles, propres à chaque utilisateur et se règlent depuis l'onglet **Réglages** de l'application (un `.env` peut aussi en définir un override opérateur pour `SERPAPI_KEY`/`TOKEN_HUNTER_IO`, mais ce n'est en général pas ce que vous voulez sur un déploiement multi-utilisateur) :
+
+| Clé | Utilité | Où l'obtenir |
+|---|---|---|
 | `SERPAPI_KEY` | Enrichissement web des entreprises | [serpapi.com](https://serpapi.com) |
 | `TOKEN_HUNTER_IO` | Recherche d'emails de contact | [hunter.io](https://hunter.io) |
-| `EMAIL_ADDRESS` / `EMAIL_PASSWORD` | Envoi des emails (SMTP Gmail) | Compte Gmail + [mot de passe d'application](https://myaccount.google.com/apppasswords) |
-| `SECRET_KEY` | Clé de session Flask | `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | Connexion "Se connecter avec Google" | [console.cloud.google.com](https://console.cloud.google.com/apis/credentials) |
-| `APP_ENCRYPTION_KEY` | Chiffrement des refresh tokens Google en base | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `EMAIL_ADDRESS` / `EMAIL_PASSWORD` | Fonctionnalité de vérification des réponses par IMAP (`/api/check-replies`) — **actuellement inerte** : il n'y a plus d'UI pour renseigner ces valeurs par utilisateur depuis le passage à l'envoi via Gmail OAuth, et elles ne sont volontairement plus lues depuis les variables d'environnement (ça reviendrait à lire la boîte mail de l'exploitant pour tous les utilisateurs). Nécessite un [mot de passe d'application Gmail](https://myaccount.google.com/apppasswords). |
 
 ## Base de données
 
@@ -72,10 +79,13 @@ DB_PASSWORD=jobtomail
 DB_NAME=jobtomail
 ```
 
-Sans `DB_BACKEND` défini, la page Paramètres → « Base de données » permet de
-choisir le backend et de tester la connexion depuis l'interface — la config
-est alors stockée dans `db_config.json` à la racine du projet (jamais dans
-`.env`, ni dans la base elle-même).
+Le choix du backend DB est une décision **exploitant/ops**, pas un réglage
+utilisateur : il n'y a pas d'UI pour le changer, et l'endpoint
+`/api/db/backend` (utilisé en interne pour tester une connexion hors
+`DB_BACKEND`) est réservé aux comptes admin. Sur un déploiement
+multi-tenant, changer de backend en cours de route affecte **tous les
+utilisateurs** — à ne faire que via les variables d'environnement
+ci-dessus, jamais à l'exécution.
 
 Changer de backend démarre avec des tables vides — pas de migration
 automatique des données existantes.
