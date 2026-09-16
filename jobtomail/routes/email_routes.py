@@ -8,7 +8,7 @@ import logging
 from flask import Blueprint, jsonify, request
 
 from jobtomail import db
-from jobtomail.db import env_or_user_config, get_entreprise
+from jobtomail.db import get_entreprise
 from jobtomail.routes.auth import current_user_id
 from jobtomail.services import api_keys, quotas
 from jobtomail.services.email_quality import assess_email
@@ -26,8 +26,13 @@ bp = Blueprint("email", __name__)
 
 
 def _smtp_credentials(user_id: int, data: dict) -> tuple[str, str]:
-    email_address = data.get("EMAIL_ADDRESS") or env_or_user_config(user_id, "EMAIL_ADDRESS")
-    email_password = data.get("EMAIL_PASSWORD") or env_or_user_config(user_id, "EMAIL_PASSWORD")
+    # IMAP check-replies lit UNIQUEMENT la config par utilisateur — jamais de
+    # fallback sur les variables d'environnement, sans quoi un opérateur
+    # ayant défini EMAIL_ADDRESS/EMAIL_PASSWORD pour son propre usage verrait
+    # sa boîte mail lue (et attribuée) pour n'importe quel utilisateur, faute
+    # d'UI restant pour renseigner une valeur par utilisateur (cf. Task 8).
+    email_address = data.get("EMAIL_ADDRESS") or db.get_user_config_value(user_id, "EMAIL_ADDRESS")
+    email_password = data.get("EMAIL_PASSWORD") or db.get_user_config_value(user_id, "EMAIL_PASSWORD")
     return email_address, email_password
 
 
