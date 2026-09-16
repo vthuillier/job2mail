@@ -38,7 +38,9 @@ _ENCRYPTED_USER_CONFIG_KEYS = ("SERPAPI_KEY", "TOKEN_HUNTER_IO")
 
 @bp.route("/")
 def index():
-    return render_template("index.html")
+    ads_enabled = db.get_config_value("ads_enabled", "0") == "1"
+    ads_network_id = db.get_config_value("ads_network_id", "")
+    return render_template("index.html", ads_enabled=ads_enabled, ads_network_id=ads_network_id)
 
 
 @bp.route("/api/config", methods=["GET", "POST"])

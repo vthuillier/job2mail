@@ -25,6 +25,9 @@
 </header>
 
 <main>
+  {% if ads_enabled %}
+  <div class="ad-slot" data-slot="sidebar-main" data-network="{{ ads_network_id }}"></div>
+  {% endif %}
   <section id="page-entreprises" class="page active">
     <div class="stats">
       <div class="stat">

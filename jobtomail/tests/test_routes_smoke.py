@@ -105,3 +105,14 @@ def test_magic_link_login_sets_real_user_id_in_session(client, app):
     row = db.get_user_by_email("someone@example.com")
     assert row is not None
     assert row["id"] == user_id
+
+
+def test_index_renders_ad_slot_when_enabled(client, temp_db):
+    from jobtomail import db
+
+    db.set_config_values({"ads_enabled": "1", "ads_network_id": "ca-pub-test"})
+    with client.session_transaction() as sess:
+        sess["user_id"] = 1
+        sess["authenticated"] = True
+    response = client.get("/")
+    assert b'class="ad-slot"' in response.data
