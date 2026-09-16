@@ -442,8 +442,12 @@ function activatePage(page) {
     document.getElementById("cfg-insee").value = cfg.INSEE_TOKEN || "";
     document.getElementById("cfg-serp").value = cfg.SERPAPI_KEY || "";
     document.getElementById("cfg-hunter").value = cfg.TOKEN_HUNTER_IO || "";
-    document.getElementById("cfg-email").value = cfg.EMAIL_ADDRESS || "";
-    document.getElementById("cfg-pwd").value = cfg.EMAIL_PASSWORD || "";
+    const gmailStatus = document.getElementById("cfg-gmail-status");
+    if (gmailStatus) {
+      gmailStatus.textContent = cfg.google_connected_email
+        ? `Compte Gmail connecté : ${cfg.google_connected_email}`
+        : "Aucun compte Gmail connecté — clique sur « Reconnecter Gmail ».";
+    }
     document.getElementById("cfg-candidate-name").value = cfg.candidate_name || "";
     document.getElementById("cfg-point").value = cfg.point_ref || "La Crau";
     document.getElementById("cfg-rayon").value = cfg.rayon_km || "20";
@@ -1137,19 +1141,13 @@ function activatePage(page) {
 
   document.getElementById("btn-check-replies").addEventListener("click", async () => {
     const btn = document.getElementById("btn-check-replies");
-    if (!state.config.EMAIL_ADDRESS || !state.config.EMAIL_PASSWORD) {
-      return toast("Configure email + mot de passe app dans Paramètres", "error");
-    }
     btn.disabled = true;
     btn.textContent = "Vérification…";
     try {
       const res = await fetch("/api/check-replies", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          EMAIL_ADDRESS: state.config.EMAIL_ADDRESS,
-          EMAIL_PASSWORD: state.config.EMAIL_PASSWORD,
-        }),
+        body: JSON.stringify({}),
       }).then((r) => r.json());
       if (res.error) {
         toast(res.error, "error");
@@ -1212,8 +1210,6 @@ function activatePage(page) {
           force,
           accept_warn,
           auto_accroche: !accroche,
-          EMAIL_ADDRESS: state.config.EMAIL_ADDRESS,
-          EMAIL_PASSWORD: state.config.EMAIL_PASSWORD,
         }),
       }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
     }
@@ -1276,8 +1272,6 @@ function activatePage(page) {
         denomination,
         siret,
         force,
-        EMAIL_ADDRESS: state.config.EMAIL_ADDRESS,
-        EMAIL_PASSWORD: state.config.EMAIL_PASSWORD,
       }),
     }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
 
@@ -1288,8 +1282,6 @@ function activatePage(page) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email, nom, prenom, genre, poste, denomination, siret, force: true,
-          EMAIL_ADDRESS: state.config.EMAIL_ADDRESS,
-          EMAIL_PASSWORD: state.config.EMAIL_PASSWORD,
         }),
       }).then((r) => r.json());
       if (res2.error) return toast(res2.error, "error");
@@ -1314,8 +1306,6 @@ function activatePage(page) {
       INSEE_TOKEN: document.getElementById("cfg-insee").value.trim(),
       SERPAPI_KEY: document.getElementById("cfg-serp").value.trim(),
       TOKEN_HUNTER_IO: document.getElementById("cfg-hunter").value.trim(),
-      EMAIL_ADDRESS: document.getElementById("cfg-email").value.trim(),
-      EMAIL_PASSWORD: document.getElementById("cfg-pwd").value.trim(),
       candidate_name: document.getElementById("cfg-candidate-name").value.trim(),
       point_ref: document.getElementById("cfg-point").value.trim(),
       rayon_km: document.getElementById("cfg-rayon").value,

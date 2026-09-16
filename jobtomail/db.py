@@ -149,6 +149,14 @@ def get_user_by_email(email: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def get_user_by_id(user_id: int) -> dict[str, Any] | None:
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            select(users_table).where(users_table.c.id == user_id)
+        ).mappings().first()
+    return dict(row) if row else None
+
+
 def create_user(email: str, google_sub: str | None = None, is_admin: bool = False) -> int:
     with get_engine().begin() as conn:
         result = conn.execute(

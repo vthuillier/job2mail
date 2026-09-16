@@ -52,11 +52,14 @@ def api_config():
     logger.debug("GET /api/config — %d clé(s) SQLite, %d NAF", len(cfg), len(nafs))
 
     candidate_name = cfg.get("candidate_name", "")
-    email_address = cfg.get("EMAIL_ADDRESS") or os.getenv("EMAIL_ADDRESS", "")
     # INSEE_TOKEN : variable d'environnement globale côté serveur uniquement,
     # jamais lue depuis la config par utilisateur.
     insee_token = os.getenv("INSEE_TOKEN", "")
-    needs_setup = not (candidate_name and email_address and insee_token)
+    connected_email = ""
+    user = db.get_user_by_id(current_user_id())
+    if user and db.get_google_refresh_token(current_user_id()):
+        connected_email = user.get("email") or ""
+    needs_setup = not (candidate_name and connected_email and insee_token)
 
     cv_profile = None
     if cfg.get("cv_profile"):
@@ -73,8 +76,7 @@ def api_config():
             or os.getenv("SERPAPI_TOKEN", ""),
             "TOKEN_HUNTER_IO": cfg.get("TOKEN_HUNTER_IO") or os.getenv("TOKEN_HUNTER_IO", ""),
             "candidate_name": candidate_name,
-            "EMAIL_ADDRESS": email_address,
-            "EMAIL_PASSWORD": cfg.get("EMAIL_PASSWORD") or os.getenv("EMAIL_PASSWORD", ""),
+            "google_connected_email": connected_email,
             "point_ref": cfg.get("point_ref", "La Crau"),
             "rayon_km": cfg.get("rayon_km", "20"),
             "departements": cfg.get("departements", "83, 13"),

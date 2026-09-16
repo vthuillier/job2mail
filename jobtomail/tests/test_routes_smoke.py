@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from cryptography.fernet import Fernet
+
 
 def test_get_entreprises_empty(client):
     res = client.get("/api/entreprises")
@@ -20,9 +22,18 @@ def test_post_then_get_config_roundtrip(client, monkeypatch):
     # (jamais stockée par utilisateur) — on la fournit via l'environnement
     # pour que needs_setup passe à False une fois les autres champs remplis.
     monkeypatch.setenv("INSEE_TOKEN", "dummy-token")
+    monkeypatch.setenv("APP_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    # needs_setup ne repose plus sur EMAIL_ADDRESS/EMAIL_PASSWORD (SMTP) mais
+    # sur la présence d'un compte Gmail OAuth connecté (refresh token stocké).
+    from jobtomail import db
+
+    with client.session_transaction() as sess:
+        user_id = sess["user_id"]
+    db.save_google_refresh_token(user_id, "fake-refresh-token")
+
     payload = {
         "candidate_name": "Jean Dupont",
-        "EMAIL_ADDRESS": "jean@example.com",
         "INSEE_TOKEN": "user-supplied-token-should-be-ignored",
     }
     post_res = client.post("/api/config", json=payload)
@@ -34,6 +45,7 @@ def test_post_then_get_config_roundtrip(client, monkeypatch):
     # Le token posté par le client ne doit jamais être persisté ni utilisé —
     # seule la variable d'environnement compte.
     assert data["INSEE_TOKEN"] == "dummy-token"
+    assert data["google_connected_email"] == "test-user@example.com"
     assert data["needs_setup"] is False
 
 

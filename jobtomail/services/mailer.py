@@ -1,13 +1,16 @@
-"""Envoi du mail de candidature et des relances (SMTP Gmail)."""
+"""Envoi du mail de candidature et des relances (Gmail API via OAuth)."""
 
 from __future__ import annotations
 
+import base64
 import logging
+import os
 import re
-import smtplib
-import ssl
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
+
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build as build_google_service
 
 from jobtomail.constants import (
     CV_PATH,
@@ -39,6 +42,11 @@ def _render_template(template: str, **kwargs: str) -> str:
 def _cv_attachment_filename(user_id: int) -> str:
     name = (db.get_user_config_value(user_id, "candidate_name") or "").strip()
     return f"CV - {name}.pdf" if name else "CV.pdf"
+
+
+def _connected_email(user_id: int) -> str:
+    user = db.get_user_by_id(user_id)
+    return (user or {}).get("email") or ""
 
 
 def get_mail_templates(user_id: int) -> dict[str, str]:
@@ -118,11 +126,28 @@ def _reply_subject(original_subject: str) -> str:
     return f"Re: {subject}"
 
 
-def _smtp_send(msg: EmailMessage, email_address: str, email_password: str) -> None:
-    context = ssl.create_default_context()
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context, timeout=30) as smtp:
-        smtp.login(email_address, email_password)
-        smtp.send_message(msg)
+def _build_gmail_service(user_id: int):
+    refresh_token = db.get_google_refresh_token(user_id)
+    if not refresh_token:
+        raise RuntimeError(
+            "Aucun compte Gmail connecté pour cet utilisateur — "
+            "reconnecte Gmail depuis Réglages."
+        )
+    credentials = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.environ["GOOGLE_CLIENT_ID"],
+        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+        scopes=["https://www.googleapis.com/auth/gmail.send"],
+    )
+    return build_google_service("gmail", "v1", credentials=credentials)
+
+
+def _gmail_send(user_id: int, msg: EmailMessage) -> None:
+    service = _build_gmail_service(user_id)
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    service.users().messages().send(userId="me", body={"raw": raw}).execute()
 
 
 def send_candidature_email(
@@ -131,8 +156,6 @@ def send_candidature_email(
     to_email: str,
     nom: str,
     genre: str,
-    email_address: str,
-    email_password: str,
     siret: str | None = None,
     prenom: str = "",
     denomination: str = "",
@@ -153,11 +176,11 @@ def send_candidature_email(
         accroche=accroche,
         body_template=templates["body"],
     )
-    domain = email_address.split("@")[-1] if "@" in email_address else "gmail.com"
+    sender_email = _connected_email(user_id)
+    domain = sender_email.split("@")[-1] if "@" in sender_email else "gmail.com"
     message_id = make_msgid(domain=domain)
 
     msg = EmailMessage()
-    msg["From"] = email_address
     msg["To"] = to_email
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)
@@ -176,7 +199,7 @@ def send_candidature_email(
     else:
         logger.warning("CV introuvable : %s", CV_PATH)
 
-    _smtp_send(msg, email_address, email_password)
+    _gmail_send(user_id, msg)
     logger.info("Mail envoyé avec succès à %s (Message-ID=%s)", to_email, message_id)
 
     if siret:
@@ -200,8 +223,6 @@ def send_relance_email(
     to_email: str,
     nom: str,
     genre: str,
-    email_address: str,
-    email_password: str,
     siret: str,
     prenom: str = "",
     denomination: str = "",
@@ -245,20 +266,22 @@ def send_relance_email(
         angle=angle,
     )
 
+    sender_email = _connected_email(user_id)
+
     previous_body = (ent["email_body"] or "").strip() if "email_body" in ent.keys() else ""
     if previous_body:
         quoted_previous = "\n".join(f"> {line}" for line in previous_body.split("\n"))
         sent_date = ent.get("last_relance_at") or ent.get("email_sent_at") or ""
-        header = f"Le {sent_date}, {email_address} a écrit :" if sent_date else "Message précédent :"
+        who = sender_email or "toi"
+        header = f"Le {sent_date}, {who} a écrit :" if sent_date else "Message précédent :"
         body = f"{rel_body}\n\n{header}\n{quoted_previous}"
     else:
         body = rel_body
 
-    domain = email_address.split("@")[-1] if "@" in email_address else "gmail.com"
+    domain = sender_email.split("@")[-1] if "@" in sender_email else "gmail.com"
     message_id = make_msgid(domain=domain)
 
     msg = EmailMessage()
-    msg["From"] = email_address
     msg["To"] = to_email
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)
@@ -280,7 +303,7 @@ def send_relance_email(
     else:
         logger.warning("CV introuvable pour la relance : %s", CV_PATH)
 
-    _smtp_send(msg, email_address, email_password)
+    _gmail_send(user_id, msg)
     logger.info(
         "Relance envoyée à %s (Message-ID=%s, In-Reply-To=%s, angle=%d)",
         to_email,

@@ -219,11 +219,6 @@ def send_email_route():
     force = bool(data.get("force", False))
     auto_accroche = bool(data.get("auto_accroche", True))
 
-    email_address, email_password = _smtp_credentials(user_id, data)
-
-    if not email_address or not email_password:
-        logger.error("Envoi mail refusé : identifiants SMTP manquants")
-        return jsonify({"error": "EMAIL_ADDRESS / EMAIL_PASSWORD manquants"}), 400
     if not to_email:
         logger.warning("Envoi mail refusé : destinataire manquant")
         return jsonify({"error": "Adresse email du destinataire manquante"}), 400
@@ -275,8 +270,6 @@ def send_email_route():
             to_email=to_email,
             nom=nom,
             genre=genre,
-            email_address=email_address,
-            email_password=email_password,
             siret=siret,
             prenom=prenom,
             denomination=denomination,
@@ -284,8 +277,8 @@ def send_email_route():
             accroche=accroche,
         )
     except Exception as e:
-        logger.exception("Envoi SMTP échoué vers %s", to_email)
-        return jsonify({"error": f"Erreur SMTP : {e}"}), 500
+        logger.exception("Envoi de mail échoué vers %s", to_email)
+        return jsonify({"error": f"Erreur d'envoi : {e}"}), 500
 
     if siret:
         db.apply_email_quality(
@@ -313,11 +306,6 @@ def send_relance_route():
     poste = (data.get("poste") or "").strip()
     force = bool(data.get("force", False))
 
-    email_address, email_password = _smtp_credentials(user_id, data)
-
-    if not email_address or not email_password:
-        logger.error("Relance refusée : identifiants SMTP manquants")
-        return jsonify({"error": "EMAIL_ADDRESS / EMAIL_PASSWORD manquants"}), 400
     if not to_email:
         return jsonify({"error": "Adresse email du destinataire manquante"}), 400
     if not siret:
@@ -348,8 +336,6 @@ def send_relance_route():
             to_email=to_email,
             nom=nom,
             genre=genre,
-            email_address=email_address,
-            email_password=email_password,
             siret=siret,
             prenom=prenom,
             denomination=denomination or (ent["denomination"] or ""),
@@ -361,8 +347,8 @@ def send_relance_route():
     except ValueError as e:
         return jsonify({"error": str(e), "relance": info}), 400
     except Exception as e:
-        logger.exception("Relance SMTP échouée vers %s", to_email)
-        return jsonify({"error": f"Erreur SMTP : {e}"}), 500
+        logger.exception("Relance échouée vers %s", to_email)
+        return jsonify({"error": f"Erreur d'envoi : {e}"}), 500
 
     return jsonify({
         "ok": True,
