@@ -59,8 +59,9 @@ def scan_sirene():
         include_associations = bool(include_associations)
 
     # INSEE_TOKEN : variable d'environnement globale côté serveur (fournie par
-    # l'exploitant), jamais lue depuis la config par utilisateur.
-    insee_token = data.get("INSEE_TOKEN") or api_keys.insee_token()
+    # l'exploitant), jamais lue depuis la config par utilisateur ni acceptée
+    # depuis le payload client (elle ne doit jamais transiter côté client).
+    insee_token = api_keys.insee_token()
     if not insee_token:
         logger.error("Scan Sirene refusé : INSEE_TOKEN manquant")
         return jsonify({"error": "Clé API INSEE (INSEE_TOKEN) manquante"}), 400

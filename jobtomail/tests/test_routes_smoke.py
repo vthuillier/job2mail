@@ -42,11 +42,29 @@ def test_post_then_get_config_roundtrip(client, monkeypatch):
     get_res = client.get("/api/config")
     data = get_res.get_json()
     assert data["candidate_name"] == "Jean Dupont"
-    # Le token posté par le client ne doit jamais être persisté ni utilisé —
-    # seule la variable d'environnement compte.
-    assert data["INSEE_TOKEN"] == "dummy-token"
+    # Le token posté par le client ne doit jamais être persisté ni utilisé,
+    # et le raw INSEE_TOKEN n'est jamais renvoyé au client — seul un booléen
+    # "insee_configured" reflète la présence de la variable d'environnement.
+    assert "INSEE_TOKEN" not in data
+    assert data["insee_configured"] is True
     assert data["google_connected_email"] == "test-user@example.com"
     assert data["needs_setup"] is False
+
+
+def test_get_config_never_leaks_raw_insee_token(client, monkeypatch):
+    """Critical: GET /api/config must never return the operator's raw
+    INSEE_TOKEN value — only a boolean `insee_configured` — otherwise any
+    authenticated user could read the shared Sirene API credential and
+    bypass the per-user scan quota by calling INSEE directly."""
+    monkeypatch.setenv("INSEE_TOKEN", "super-secret-operator-token")
+
+    res = client.get("/api/config")
+    assert res.status_code == 200
+    data = res.get_json()
+
+    assert "INSEE_TOKEN" not in data
+    assert "super-secret-operator-token" not in res.get_data(as_text=True)
+    assert data["insee_configured"] is True
 
 
 def test_post_config_never_persists_insee_token(client):
@@ -55,7 +73,9 @@ def test_post_config_never_persists_insee_token(client):
     client.post("/api/config", json={"INSEE_TOKEN": "attacker-or-user-supplied"})
     res = client.get("/api/config")
     assert res.status_code == 200
-    assert res.get_json()["INSEE_TOKEN"] == ""
+    data = res.get_json()
+    assert "INSEE_TOKEN" not in data
+    assert data["insee_configured"] is False
 
 
 def test_post_config_rejects_internal_keys(client):

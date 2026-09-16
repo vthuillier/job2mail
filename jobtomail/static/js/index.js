@@ -439,7 +439,6 @@ function activatePage(page) {
     state.config = cfg;
     state.nafs = { ...(cfg.nafs || {}) };
 
-    document.getElementById("cfg-insee").value = cfg.INSEE_TOKEN || "";
     document.getElementById("cfg-serp").value = cfg.SERPAPI_KEY || "";
     document.getElementById("cfg-hunter").value = cfg.TOKEN_HUNTER_IO || "";
     const gmailStatus = document.getElementById("cfg-gmail-status");
@@ -1306,7 +1305,6 @@ function activatePage(page) {
       selectedNafs[cb.value] = state.nafs[cb.value] || cb.value;
     });
     const payload = {
-      INSEE_TOKEN: document.getElementById("cfg-insee").value.trim(),
       SERPAPI_KEY: document.getElementById("cfg-serp").value.trim(),
       TOKEN_HUNTER_IO: document.getElementById("cfg-hunter").value.trim(),
       candidate_name: document.getElementById("cfg-candidate-name").value.trim(),
@@ -1575,7 +1573,6 @@ function activatePage(page) {
         nafs: selected,
         include_mairies: includeMairies,
         include_associations: includeAssociations,
-        INSEE_TOKEN: state.config.INSEE_TOKEN,
       });
 
       const clean = res.clean || {};

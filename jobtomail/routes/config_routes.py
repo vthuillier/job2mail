@@ -20,6 +20,7 @@ from jobtomail.constants import (
     OLLAMA_MODEL,
 )
 from jobtomail import db, db_config
+from jobtomail.routes.admin import _require_admin
 from jobtomail.routes.auth import current_user_id
 from jobtomail.services import api_keys
 from jobtomail.services.crypto import encrypt
@@ -101,7 +102,7 @@ def api_config():
 
     return jsonify(
         {
-            "INSEE_TOKEN": insee_token,
+            "insee_configured": bool(insee_token),
             "SERPAPI_KEY": api_keys.serpapi_key_for(current_user_id()) or "",
             "TOKEN_HUNTER_IO": api_keys.hunter_key_for(current_user_id()) or "",
             "candidate_name": candidate_name,
@@ -142,6 +143,10 @@ def reset_db():
 
 @bp.route("/api/db/backend", methods=["GET"])
 def get_db_backend():
+    # Décision exploitant (ops-only) : reconfigurer le backend DB d'un
+    # déploiement multi-tenant impacte TOUS les utilisateurs — jamais
+    # accessible à un utilisateur non-admin.
+    _require_admin()
     cfg = db_config.resolve_db_config()
     return jsonify(
         {
@@ -158,6 +163,10 @@ def get_db_backend():
 
 @bp.route("/api/db/backend", methods=["POST"])
 def set_db_backend():
+    # Décision exploitant (ops-only) : reconfigurer le backend DB d'un
+    # déploiement multi-tenant impacte TOUS les utilisateurs — jamais
+    # accessible à un utilisateur non-admin.
+    _require_admin()
     current = db_config.resolve_db_config()
     if current.source == "env":
         return jsonify(

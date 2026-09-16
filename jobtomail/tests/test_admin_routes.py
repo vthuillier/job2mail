@@ -117,6 +117,65 @@ def test_malicious_email_round_trips_as_plain_json_data(app):
     assert payload in emails
 
 
+# --- Security: /api/db/backend must be admin-only ---------------------
+#
+# Task 13 only hid the frontend DB-backend picker; the server-side
+# /api/db/backend routes were still reachable by any authenticated user,
+# letting them point the whole multi-tenant deployment's database at an
+# attacker-controlled host (SSRF/credential-probe primitive) or, on
+# success, hijack every user's data.
+
+
+def test_non_admin_gets_403_on_get_db_backend(client):
+    response = client.get("/api/db/backend")
+    assert response.status_code == 403
+
+
+def test_non_admin_gets_403_on_set_db_backend(client):
+    response = client.post(
+        "/api/db/backend",
+        json={"backend": "postgres", "host": "attacker.example", "port": "5432"},
+    )
+    assert response.status_code == 403
+
+
+def test_admin_can_read_db_backend(app):
+    test_client = _admin_client(app)
+    response = test_client.get("/api/db/backend")
+    assert response.status_code == 200
+    assert response.get_json()["backend"] == "sqlite"
+
+
+# --- Robustness: quota admin endpoint must validate its input ----------
+#
+# `str(data["scan_limit"])` written unguarded into config, then
+# `int(override)` read unguarded in `quotas._limit_for`, meant a
+# non-numeric admin input crashed every subsequent scan/email request for
+# every user until fixed manually.
+
+
+def test_admin_quota_rejects_non_numeric_value(app):
+    test_client = _admin_client(app)
+    response = test_client.post("/admin/api/quotas", json={"scan_limit": "not-a-number"})
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
+    from jobtomail import db
+
+    with app.app_context():
+        assert db.get_app_config_value("quota_scan_limit") == ""
+
+
+def test_admin_quota_rejects_zero_and_negative_values(app):
+    test_client = _admin_client(app)
+
+    response = test_client.post("/admin/api/quotas", json={"scan_limit": 0})
+    assert response.status_code == 400
+
+    response = test_client.post("/admin/api/quotas", json={"email_limit": -5})
+    assert response.status_code == 400
+
+
 def test_admin_template_never_uses_innerhtml_for_user_data():
     """Regression guard: templates/admin.html must render user-controlled
     fields (email, etc.) via DOM/textContent, never innerHTML + string
