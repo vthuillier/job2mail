@@ -24,6 +24,12 @@ def app(temp_db, monkeypatch):
     # Même raison : un .env local (dépôt parent du worktree) peut contenir un vrai
     # INSEE_TOKEN, faisant passer à tort le contrôle "clé manquante" dans les tests.
     monkeypatch.setenv("INSEE_TOKEN", "")
+    # Idem pour SerpAPI/Hunter : un .env local peut définir ces clés en tant
+    # qu'override opérateur, ce qui masquerait le comportement testé (clé
+    # utilisateur par défaut, chiffrement/déchiffrement, "clé manquante").
+    monkeypatch.setenv("SERPAPI_KEY", "")
+    monkeypatch.setenv("SERPAPI_TOKEN", "")
+    monkeypatch.setenv("TOKEN_HUNTER_IO", "")
     from jobtomail import create_app
 
     flask_app = create_app()

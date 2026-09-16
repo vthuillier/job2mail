@@ -21,12 +21,19 @@ from jobtomail.constants import (
 )
 from jobtomail import db, db_config
 from jobtomail.routes.auth import current_user_id
+from jobtomail.services import api_keys
+from jobtomail.services.crypto import encrypt
 from jobtomail.services.cv_profile import extract_cv_profile
 from jobtomail.services.ollama import ollama_available
 
 logger = logging.getLogger(__name__)
 
 bp = Blueprint("main", __name__)
+
+# Clés utilisateur stockées chiffrées au repos (secrets d'API tiers) —
+# distinctes du reste de la config (candidate_name, templates, ...) qui n'a
+# pas besoin de chiffrement.
+_ENCRYPTED_USER_CONFIG_KEYS = ("SERPAPI_KEY", "TOKEN_HUNTER_IO")
 
 
 @bp.route("/")
@@ -43,6 +50,9 @@ def api_config():
         # (fournie par l'exploitant) — jamais stockée par utilisateur, même
         # si le client la renvoie dans le payload.
         data.pop("INSEE_TOKEN", None)
+        for key in _ENCRYPTED_USER_CONFIG_KEYS:
+            if key in data and data[key]:
+                data[key] = encrypt(str(data[key]))
         logger.info("POST /api/config — clés reçues : %s", list(data.keys()))
         db.set_user_config_values(current_user_id(), data)
         return jsonify({"ok": True})
@@ -54,7 +64,7 @@ def api_config():
     candidate_name = cfg.get("candidate_name", "")
     # INSEE_TOKEN : variable d'environnement globale côté serveur uniquement,
     # jamais lue depuis la config par utilisateur.
-    insee_token = os.getenv("INSEE_TOKEN", "")
+    insee_token = api_keys.insee_token()
     connected_email = ""
     user = db.get_user_by_id(current_user_id())
     if user and db.get_google_refresh_token(current_user_id()):
@@ -71,10 +81,8 @@ def api_config():
     return jsonify(
         {
             "INSEE_TOKEN": insee_token,
-            "SERPAPI_KEY": cfg.get("SERPAPI_KEY")
-            or os.getenv("SERPAPI_KEY")
-            or os.getenv("SERPAPI_TOKEN", ""),
-            "TOKEN_HUNTER_IO": cfg.get("TOKEN_HUNTER_IO") or os.getenv("TOKEN_HUNTER_IO", ""),
+            "SERPAPI_KEY": api_keys.serpapi_key_for(current_user_id()) or "",
+            "TOKEN_HUNTER_IO": api_keys.hunter_key_for(current_user_id()) or "",
             "candidate_name": candidate_name,
             "google_connected_email": connected_email,
             "point_ref": cfg.get("point_ref", "La Crau"),

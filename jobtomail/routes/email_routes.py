@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request
 from jobtomail import db
 from jobtomail.db import env_or_user_config, get_entreprise
 from jobtomail.routes.auth import current_user_id
+from jobtomail.services import api_keys
 from jobtomail.services.email_quality import assess_email
 from jobtomail.services.hunter import find_email as hunter_find_email
 from jobtomail.services.email_finder import find_email as find_email_smtp, FoundEmail
@@ -78,7 +79,7 @@ def find_email_hunter():
     prenom = (data.get("prenom") or "").strip()
     nom = (data.get("nom") or "").strip()
     siret = (data.get("siret") or "").strip()
-    hunter_key = data.get("TOKEN_HUNTER_IO") or env_or_user_config(current_user_id(), "TOKEN_HUNTER_IO")
+    hunter_key = data.get("TOKEN_HUNTER_IO") or api_keys.hunter_key_for(current_user_id())
 
     if not hunter_key:
         logger.error("Hunter.io refusé : TOKEN manquant")
